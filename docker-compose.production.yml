@@ -1,0 +1,131 @@
+# =============================================================================
+# DOCKER COMPOSE - PRODUCCIÓN con Cloudflare + HTTPS
+# =============================================================================
+# Este archivo configura el bot para producción con:
+# - Nginx como reverse proxy (conecta con Cloudflare)
+# - Backend FastAPI
+# - Frontend React (servido por Nginx)
+# - MongoDB + Redis
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # NGINX - Reverse Proxy (Punto de entrada desde Cloudflare)
+  # ===========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: trading-bot-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"      # HTTP (Cloudflare se conecta aquí)
+      - "443:443"    # HTTPS (si usas certificado propio)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/cloudflare.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/build:/usr/share/nginx/html:ro  # Frontend estático
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - api
+    networks:
+      - trading-network
+    environment:
+      - NGINX_ENTRYPOINT_QUIET_LOGS=1
+    # Solo aceptar conexiones de Cloudflare (IPs oficiales)
+    # Nota: En producción, usa allow/deny con IPs de Cloudflare
+
+  # ===========================================================================
+  # API - FastAPI Backend
+  # ===========================================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: trading-bot-api
+    restart: unless-stopped
+    # No exponer puerto al exterior - solo Nginx puede acceder
+    expose:
+      - "8000"
+    environment:
+      - MONGO_URL=mongodb://mongo:27017
+      - DB_NAME=trading_bot
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
+      - LOG_LEVEL=WARNING
+      - CORS_ORIGINS=https://tudominio.com  # ← Tu dominio real aquí
+    env_file:
+      - .env.production  # Archivo con API_SECRET_KEY, tokens, etc.
+    volumes:
+      - ./logs/api:/var/log/trading-bot
+    depends_on:
+      - mongo
+      - redis
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ===========================================================================
+  # MongoDB - Base de datos
+  # ===========================================================================
+  mongo:
+    image: mongo:7
+    container_name: trading-bot-mongo
+    restart: unless-stopped
+    expose:
+      - "27017"  # Solo accesible internamente
+    environment:
+      - MONGO_INITDB_DATABASE=trading_bot
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - trading-network
+    # Autenticación básica recomendada para producción
+    # command: mongod --auth
+
+  # ===========================================================================
+  # Redis - Cache / Rate limiting
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: trading-bot-redis
+    restart: unless-stopped
+    expose:
+      - "6379"  # Solo accesible internamente
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - trading-network
+
+  # ===========================================================================
+  # Mongo Express - Panel de administración (opcional, protegido)
+  # ===========================================================================
+  # Descomentar solo si necesitas acceso web a MongoDB
+  # mongo-express:
+  #   image: mongo-express:latest
+  #   container_name: trading-bot-mongo-express
+  #   restart: unless-stopped
+  #   expose:
+  #     - "8081"  # Solo accesible vía tunnel o VPN
+  #   environment:
+  #     - ME_CONFIG_MONGODB_URL=mongodb://mongo:27017
+  #     - ME_CONFIG_BASICAUTH_USERNAME=admin
+  #     - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD}
+  #   depends_on:
+  #     - mongo
+  #   networks:
+  #     - trading-network
+
+networks:
+  trading-network:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  redis-data:

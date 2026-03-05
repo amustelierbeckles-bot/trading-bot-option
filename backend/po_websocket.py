@@ -1,0 +1,582 @@
+"""
+PocketOption WebSocket Provider v1.0
+=====================================
+Conexión directa a wss://events-po.com/socket.io/ con:
+  - Camuflaje TLS (headers idénticos a Chrome 145)
+  - Jitter humano en suscripciones
+  - Heartbeat con variación aleatoria
+  - Kill-Switch automático con fallback a Twelve Data
+  - Renovación automática de sesión
+
+Protocolo: Socket.IO v4 sobre WebSocket
+"""
+
+import asyncio
+import json
+import logging
+import os
+import random
+import time
+from collections import defaultdict, deque
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
+
+import websockets
+from websockets.exceptions import ConnectionClosed
+
+logger = logging.getLogger(__name__)
+
+# ── Mapeo OTC symbol → símbolo interno de PO ─────────────────────────────────
+# Extraído del protocolo observado en Network tab
+OTC_SYMBOL_MAP = {
+    "OTC_EURUSD":  "#EURUSD_otc",
+    "OTC_GBPUSD":  "#GBPUSD_otc",
+    "OTC_USDJPY":  "#USDJPY_otc",
+    "OTC_USDCHF":  "#USDCHF_otc",
+    "OTC_AUDUSD":  "#AUDUSD_otc",
+    "OTC_NZDUSD":  "#NZDUSD_otc",
+    "OTC_USDCAD":  "#USDCAD_otc",
+    "OTC_EURJPY":  "#EURJPY_otc",
+    "OTC_EURGBP":  "#EURGBP_otc",
+    "OTC_EURAUD":  "#EURAUD_otc",
+    "OTC_EURCAD":  "#EURCAD_otc",
+    "OTC_EURCHF":  "#EURCHF_otc",
+    "OTC_GBPJPY":  "#GBPJPY_otc",
+    "OTC_GBPAUD":  "#GBPAUD_otc",
+    "OTC_GBPCAD":  "#GBPCAD_otc",
+    "OTC_GBPCHF":  "#GBPCHF_otc",
+    "OTC_AUDJPY":  "#AUDJPY_otc",
+    "OTC_AUDCAD":  "#AUDCAD_otc",
+    "OTC_CADJPY":  "#CADJPY_otc",
+    "OTC_CHFJPY":  "#CHFJPY_otc",
+}
+
+# Inverso: símbolo PO → símbolo OTC
+PO_TO_OTC = {v: k for k, v in OTC_SYMBOL_MAP.items()}
+
+# ── Headers idénticos a Chrome 145 en Edge (capturados del F12) ──────────────
+CHROME_HEADERS = {
+    "Accept-Encoding":         "gzip, deflate, br, zstd",
+    "Accept-Language":         "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control":           "no-cache",
+    "Connection":              "Upgrade",
+    "Host":                    "demo-api-eu.po.market",
+    "Origin":                  "https://pocketoption.com",
+    "Pragma":                  "no-cache",
+    "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
+    "Sec-WebSocket-Version":   "13",
+    "Upgrade":                 "websocket",
+    "User-Agent":              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+}
+
+# ── Constantes ────────────────────────────────────────────────────────────────
+WS_URL_DEMO = "wss://demo-api-eu.po.market/socket.io/?EIO=4&transport=websocket"
+WS_URL_REAL = "wss://api-eu.po.market/socket.io/?EIO=4&transport=websocket"
+WS_URL      = WS_URL_DEMO  # Cambia a WS_URL_REAL para cuenta real
+PING_INTERVAL   = 25    # segundos base para heartbeat
+PING_JITTER     = 3     # ± segundos de variación aleatoria
+SUB_DELAY_MIN   = 1.2   # delay mínimo entre suscripciones (comportamiento humano)
+SUB_DELAY_MAX   = 3.5   # delay máximo
+CANDLE_HISTORY  = 60    # velas a mantener en memoria por par
+RECONNECT_DELAY = 5     # segundos antes de reconectar
+
+
+class CandleBuffer:
+    """Buffer circular de velas para un par."""
+    def __init__(self, maxlen: int = CANDLE_HISTORY):
+        self.candles: deque = deque(maxlen=maxlen)
+        self.last_price: float = 0.0
+        self.last_update: float = 0.0
+
+    def update(self, price: float, timestamp: float):
+        """Agrega tick y construye velas de 1 minuto."""
+        self.last_price = price
+        self.last_update = timestamp
+
+        # Construye vela del minuto actual
+        minute = int(timestamp // 60) * 60
+        if self.candles and self.candles[-1]["time"] == minute:
+            c = self.candles[-1]
+            c["high"]  = max(c["high"], price)
+            c["low"]   = min(c["low"],  price)
+            c["close"] = price
+        else:
+            self.candles.append({
+                "time":  minute,
+                "open":  price,
+                "high":  price,
+                "low":   price,
+                "close": price,
+            })
+
+    def get_closes(self) -> List[float]:
+        return [c["close"] for c in self.candles]
+
+    def get_highs(self) -> List[float]:
+        return [c["high"] for c in self.candles]
+
+    def get_lows(self) -> List[float]:
+        return [c["low"] for c in self.candles]
+
+    @property
+    def is_ready(self) -> bool:
+        """True si hay suficientes velas para calcular indicadores."""
+        return len(self.candles) >= 30
+
+
+class POWebSocketProvider:
+    """
+    Proveedor de datos en tiempo real desde PocketOption via WebSocket.
+    Reemplaza a TwelveDataProvider con datos 100% exactos de PO.
+    """
+
+    def __init__(self):
+        self.is_connected:   bool = False
+        self.is_configured:  bool = False
+        self.source:         str  = "po_websocket"
+        self.status:         str  = "disconnected"  # disconnected | connecting | active | evading
+
+        # Buffers de datos por par
+        self._buffers: Dict[str, CandleBuffer] = {
+            sym: CandleBuffer() for sym in OTC_SYMBOL_MAP
+        }
+
+        # Callbacks externos
+        self._price_callbacks: List[Callable] = []
+
+        # Estado interno
+        self._ws             = None
+        self._task           = None
+        self._ssid:    str   = ""   # session ID de PO
+        self._secret:  str   = ""   # secret token de autenticación
+        self._user_id: int   = 0
+
+        # Kill-switch
+        self._kill_switch_active: bool  = False
+        self._consecutive_errors: int   = 0
+        self._max_errors:         int   = 3
+
+        # Estadísticas
+        self.ticks_received:  int   = 0
+        self.connected_since: float = 0.0
+
+    # ── Configuración ─────────────────────────────────────────────────────────
+
+    def configure(self, ssid: str, secret: str = "", user_id: int = 0,
+                  full_cookie: str = "", is_demo: bool = True):
+        """
+        Configura las credenciales de sesión.
+        ssid: valor de la cookie 'ci_session' de PO
+        full_cookie: cadena completa de cookies (opcional, más confiable)
+        is_demo: True para cuenta demo, False para cuenta real
+        """
+        global WS_URL
+        self._ssid       = ssid
+        self._secret     = secret
+        self._user_id    = user_id
+        self._full_cookie = full_cookie
+        self.is_configured = bool(ssid or full_cookie)
+        WS_URL = WS_URL_DEMO if is_demo else WS_URL_REAL
+        logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s",
+                    user_id, "DEMO" if is_demo else "REAL")
+
+    # ── Inicio ────────────────────────────────────────────────────────────────
+
+    async def start(self):
+        """Arranca el loop de conexión en background."""
+        if not self.is_configured:
+            logger.warning("⚠️  POWebSocket no configurado — falta SSID")
+            return
+        self._task = asyncio.create_task(self._connection_loop())
+        logger.info("🚀 POWebSocket iniciado")
+
+    async def stop(self):
+        """Detiene la conexión limpiamente."""
+        if self._task:
+            self._task.cancel()
+        if self._ws:
+            await self._ws.close()
+        self.is_connected = False
+        self.status = "disconnected"
+        logger.info("🛑 POWebSocket detenido")
+
+    # ── Loop principal ────────────────────────────────────────────────────────
+
+    async def _connection_loop(self):
+        """Reconecta automáticamente si se pierde la conexión."""
+        while True:
+            try:
+                self.status = "connecting"
+                logger.info("🔄 Conectando a PO WebSocket...")
+                await self._connect_and_run()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._consecutive_errors += 1
+                logger.warning("⚠️  Error WebSocket: %s (intento %d)",
+                               e, self._consecutive_errors)
+
+                if self._consecutive_errors >= self._max_errors:
+                    self._activate_kill_switch()
+
+                delay = RECONNECT_DELAY * self._consecutive_errors
+                logger.info("⏳ Reconectando en %ds...", delay)
+                await asyncio.sleep(delay)
+
+    async def _connect_and_run(self):
+        """Establece conexión y maneja mensajes."""
+        # Headers con cookie de sesión completa
+        headers = {**CHROME_HEADERS, "Host": WS_URL.split("/")[2]}
+        if getattr(self, "_full_cookie", ""):
+            headers["Cookie"] = self._full_cookie
+        elif self._ssid:
+            headers["Cookie"] = f"ci_session={self._ssid}"
+
+        async with websockets.connect(
+            WS_URL,
+            additional_headers=headers,
+            ping_interval=None,   # manejamos ping manualmente con jitter
+            ping_timeout=30,
+            close_timeout=10,
+            max_size=10 * 1024 * 1024,
+        ) as ws:
+            self._ws             = ws
+            self.is_connected    = True
+            self.connected_since = time.time()
+            self.status          = "active"
+            self._consecutive_errors = 0
+
+            logger.info("✅ POWebSocket conectado a events-po.com")
+
+            # Lanza tasks paralelas
+            await asyncio.gather(
+                self._message_handler(ws),
+                self._heartbeat_loop(ws),
+            )
+
+    # ── Handshake y autenticación ─────────────────────────────────────────────
+
+    async def _handle_handshake(self, ws, data: str):
+        """Procesa el mensaje inicial de Socket.IO."""
+        # Mensaje 0: {"sid":"...","upgrades":[],"pingInterval":...}
+        try:
+            info = json.loads(data)
+            sid  = info.get("sid", "")
+            logger.info("🤝 Socket.IO handshake | sid=%s", sid[:8])
+        except Exception:
+            pass
+
+        # Responde con upgrade a WebSocket (mensaje "40")
+        await ws.send("40")
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+
+        # Autenticación con secret si está disponible
+        if self._secret and self._user_id:
+            auth_msg = json.dumps(["auth", {
+                "session": self._ssid,
+                "isDemo":  1,
+            }])
+            await ws.send(f"42{auth_msg}")
+            logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
+            await asyncio.sleep(random.uniform(0.5, 1.2))
+
+        # Suscribirse a los pares con delay humano
+        await self._subscribe_pairs(ws)
+
+    async def _subscribe_pairs(self, ws):
+        """Suscripción progresiva con jitter humano."""
+        symbols = list(OTC_SYMBOL_MAP.values())
+        logger.info("📡 Suscribiendo %d pares con jitter humano...", len(symbols))
+
+        for i, po_sym in enumerate(symbols):
+            msg = json.dumps(["subscribeSymbol", {"asset": po_sym}])
+            await ws.send(f"42{msg}")
+
+            # Delay aleatorio entre suscripciones (comportamiento humano)
+            if i < len(symbols) - 1:
+                delay = random.uniform(SUB_DELAY_MIN, SUB_DELAY_MAX)
+                await asyncio.sleep(delay)
+
+        logger.info("✅ Suscripción completa a %d pares", len(symbols))
+
+    # ── Handler de mensajes ───────────────────────────────────────────────────
+
+    async def _message_handler(self, ws):
+        """Procesa todos los mensajes entrantes."""
+        async for raw in ws:
+            try:
+                await self._process_message(ws, raw)
+            except Exception as e:
+                logger.debug("Error procesando mensaje: %s", e)
+
+    async def _process_message(self, ws, raw):
+        """Decodifica y enruta cada mensaje de Socket.IO."""
+
+        # ── Mensajes BINARIOS: ["SYMBOL_otc", price_integer] ─────────────────
+        # Formato confirmado por ingeniería inversa del protocolo PO:
+        # bytes UTF-8 → ["EURJPY_otc", 186742000] → precio = 186742000 / 1_000_000
+        if isinstance(raw, bytes):
+            await self._handle_binary_price(raw)
+            return
+
+        if not isinstance(raw, str):
+            return
+
+        # Socket.IO prefix
+        if raw.startswith("0"):
+            await self._handle_handshake(ws, raw[1:])
+            return
+
+        if raw == "2":
+            # Ping del servidor → responder con pong
+            await ws.send("3")
+            return
+
+        if raw.startswith("40"):
+            logger.debug("Socket.IO conectado (40)")
+            return
+
+        # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
+        if raw.startswith("45"):
+            try:
+                bracket = raw.index("[")
+                payload = json.loads(raw[bracket:])
+                event   = payload[0] if payload else ""
+                data    = payload[1] if len(payload) > 1 else {}
+                await self._handle_event(event, data)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return
+
+        if raw.startswith("42"):
+            try:
+                payload = json.loads(raw[2:])
+                event   = payload[0] if payload else ""
+                data    = payload[1] if len(payload) > 1 else {}
+                await self._handle_event(event, data)
+            except json.JSONDecodeError:
+                pass
+
+    async def _handle_binary_price(self, raw: bytes):
+        """
+        Decodifica mensajes binarios de precio de PO.
+        Formato: ["SYMBOL_otc", price_integer]
+        Precio real = price_integer / 1_000_000
+
+        Confirmado por ingeniería inversa:
+          bytes: 5B 22 45 55 52 4A 50 59 5F 6F 74 63 22 2C 31 37 37 32 33 31 31 37 36 5D
+          texto: ["EURJPY_otc",177231176]
+          precio: 177231176 / 1_000_000 = 177.231176
+        """
+        try:
+            text   = raw.decode("utf-8", errors="replace")
+            parsed = json.loads(text)
+
+            if not isinstance(parsed, list) or len(parsed) < 2:
+                return
+
+            symbol    = parsed[0]   # "EURJPY_otc"
+            price_raw = parsed[1]   # 186742000 (entero)
+
+            if not isinstance(symbol, str) or not isinstance(price_raw, (int, float)):
+                return
+
+            price   = float(price_raw) / 1_000_000
+            ts      = time.time()
+            otc_sym = PO_TO_OTC.get(symbol, symbol)
+
+            if otc_sym not in self._buffers:
+                return
+
+            self._buffers[otc_sym].update(price, ts)
+            self.ticks_received += 1
+
+            for cb in self._price_callbacks:
+                try:
+                    asyncio.create_task(cb(otc_sym, price))
+                except Exception:
+                    pass
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    async def _handle_event(self, event: str, data):
+        """Enruta eventos por tipo."""
+
+        # Precio en tiempo real
+        if event in ("updateStream", "candle", "tick", "price_update"):
+            await self._handle_price(data)
+            return
+
+        # Autenticación exitosa
+        if event in ("user_ready", "successauth"):
+            logger.info("✅ Autenticación PO exitosa")
+            return
+
+        # Error de autenticación
+        if event in ("notauthorized", "error"):
+            logger.warning("🔴 Error de auth PO: %s", data)
+            self._activate_kill_switch()
+            return
+
+        # Candle histórica
+        if event in ("candles", "history"):
+            await self._handle_history(data)
+            return
+
+    async def _handle_price(self, data: dict):
+        """Procesa tick de precio y actualiza buffer."""
+        if not isinstance(data, dict):
+            return
+
+        # Diferentes formatos posibles de PO
+        asset = (data.get("asset") or data.get("symbol") or
+                 data.get("active") or "")
+        price = (data.get("price") or data.get("value") or
+                 data.get("close") or 0.0)
+        ts    = data.get("time") or data.get("timestamp") or time.time()
+
+        if not asset or not price:
+            return
+
+        # Convertir símbolo PO → símbolo OTC interno
+        otc_sym = PO_TO_OTC.get(asset, asset)
+        if otc_sym not in self._buffers:
+            return
+
+        self._buffers[otc_sym].update(float(price), float(ts))
+        self.ticks_received += 1
+
+        # Notifica callbacks externos (para el scan loop)
+        for cb in self._price_callbacks:
+            try:
+                asyncio.create_task(cb(otc_sym, float(price)))
+            except Exception:
+                pass
+
+        if self.ticks_received % 100 == 0:
+            logger.debug("📈 %d ticks recibidos | último: %s=%.5f",
+                         self.ticks_received, otc_sym, price)
+
+    async def _handle_history(self, data):
+        """Carga velas históricas al conectar."""
+        if not isinstance(data, dict):
+            return
+        asset   = data.get("asset", "")
+        candles = data.get("candles") or data.get("data") or []
+        otc_sym = PO_TO_OTC.get(asset, asset)
+
+        if otc_sym not in self._buffers:
+            return
+
+        buf = self._buffers[otc_sym]
+        for c in candles[-CANDLE_HISTORY:]:
+            price = c.get("close") or c.get("value") or 0.0
+            ts    = c.get("time")  or c.get("timestamp") or 0
+            if price and ts:
+                buf.update(float(price), float(ts))
+
+        logger.info("📚 Historial cargado | %s | %d velas", otc_sym, len(candles))
+
+    # ── Heartbeat con jitter ──────────────────────────────────────────────────
+
+    async def _heartbeat_loop(self, ws):
+        """Envía ping-server con variación aleatoria (no robótico)."""
+        while True:
+            # Intervalo con jitter: 25s ± 3s aleatorio
+            interval = PING_INTERVAL + random.uniform(-PING_JITTER, PING_JITTER)
+            await asyncio.sleep(interval)
+
+            try:
+                ping_msg = json.dumps(["ping-server"])
+                await ws.send(f"42{ping_msg}")
+                logger.debug("💓 Heartbeat enviado (%.1fs)", interval)
+            except ConnectionClosed:
+                break
+
+    # ── Kill-Switch ───────────────────────────────────────────────────────────
+
+    def _activate_kill_switch(self):
+        """
+        Activa modo seguro:
+        - Desconecta WebSocket
+        - Señaliza fallback a Twelve Data
+        - Dashboard muestra ALERTA ROJA
+        """
+        if not self._kill_switch_active:
+            self._kill_switch_active = True
+            self.status = "evading"
+            self.is_connected = False
+            logger.warning("🔴 KILL-SWITCH ACTIVADO — Fallback a Twelve Data")
+
+    def reset_kill_switch(self):
+        """Resetea el kill-switch para intentar reconectar."""
+        self._kill_switch_active = False
+        self._consecutive_errors = 0
+        self.status = "disconnected"
+        logger.info("🟢 Kill-switch reseteado — intentando reconectar")
+
+    # ── API pública para el bot ───────────────────────────────────────────────
+
+    def get_cached_price(self, otc_symbol: str) -> Optional[float]:
+        """Retorna el último precio conocido del par."""
+        buf = self._buffers.get(otc_symbol)
+        if buf and buf.last_price > 0:
+            # Precio válido si tiene menos de 60s
+            if time.time() - buf.last_update < 60:
+                return buf.last_price
+        return None
+
+    def get_candles(self, otc_symbol: str) -> List[dict]:
+        """Retorna las velas acumuladas del par."""
+        buf = self._buffers.get(otc_symbol)
+        return list(buf.candles) if buf else []
+
+    def is_ready(self, otc_symbol: str) -> bool:
+        """True si hay suficientes datos para generar señales."""
+        buf = self._buffers.get(otc_symbol)
+        return buf.is_ready if buf else False
+
+    def get_status(self) -> dict:
+        """Estado completo del proveedor para el dashboard."""
+        ready_pairs = sum(
+            1 for sym in OTC_SYMBOL_MAP
+            if self._buffers[sym].is_ready
+        )
+        return {
+            "source":            self.source,
+            "status":            self.status,
+            "is_connected":      self.is_connected,
+            "kill_switch":       self._kill_switch_active,
+            "ticks_received":    self.ticks_received,
+            "ready_pairs":       ready_pairs,
+            "total_pairs":       len(OTC_SYMBOL_MAP),
+            "connected_since":   datetime.utcfromtimestamp(
+                                     self.connected_since
+                                 ).isoformat() if self.connected_since else None,
+            "uptime_minutes":    round(
+                                     (time.time() - self.connected_since) / 60, 1
+                                 ) if self.connected_since else 0,
+        }
+
+    def on_price_update(self, callback: Callable):
+        """Registra callback para recibir updates de precio en tiempo real."""
+        self._price_callbacks.append(callback)
+
+
+# ── Singleton global ──────────────────────────────────────────────────────────
+_po_provider: Optional[POWebSocketProvider] = None
+
+
+def get_po_provider() -> Optional[POWebSocketProvider]:
+    return _po_provider
+
+
+def init_po_provider(ssid: str, secret: str = "", user_id: int = 0,
+                     full_cookie: str = "", is_demo: bool = True) -> POWebSocketProvider:
+    global _po_provider
+    _po_provider = POWebSocketProvider()
+    _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo)
+    return _po_provider

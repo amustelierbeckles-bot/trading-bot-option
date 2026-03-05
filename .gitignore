@@ -1,0 +1,89 @@
+# =============================================================================
+# GITIGNORE - Trading Bot
+# =============================================================================
+
+# Environment variables - NUNCA subir credenciales
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.dmypy.json
+*.cover
+.hypothesis/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.tox/
+*.log
+local_settings.py
+instance/
+.webassets-cache
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+.dockerignore
+
+# MongoDB data
+mongo-data/
+redis-data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Frontend (managed by frontend/.gitignore but double safety)
+frontend/node_modules/
+frontend/build/
+frontend/.env*
+
+# Secrets
+secrets/
+*.pem
+*.key
+*.cert
+*.crt
