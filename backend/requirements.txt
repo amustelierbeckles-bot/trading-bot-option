@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+motor
+redis
+python-dotenv
+websockets
+aiohttp
+pydantic
+python-telegram-bot
+requests
+# Testing
+pytest
+pytest-asyncio
+httpx
