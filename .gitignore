@@ -87,3 +87,5 @@ secrets/
 *.key
 *.cert
 *.crt
+
+*.zip
