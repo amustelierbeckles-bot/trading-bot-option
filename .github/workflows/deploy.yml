@@ -33,7 +33,9 @@ jobs:
           
           # Actualizar imágenes Docker
           echo "🐳 Reconstruyendo contenedores..."
-          docker compose -f docker-compose.production.yml up -d --build --remove-orphans
+          # Usamos docker-compose (con guion) por compatibilidad
+          docker-compose -f docker-compose.production.yml down
+          docker-compose -f docker-compose.production.yml up -d --build --remove-orphans
           
           # Limpieza
           docker image prune -f
