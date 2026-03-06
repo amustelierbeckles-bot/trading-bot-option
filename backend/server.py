@@ -155,41 +155,84 @@ class TradingStrategy:
         return None
 
 
-class KeltnerRSIStrategy(TradingStrategy):
+class RangeBreakoutStrategy(TradingStrategy):
     """
-    Señal basada en RSI extremo + precio tocando banda de Bollinger
-    (como proxy del canal de Keltner cuando no hay ATR real).
-    REAL:  RSI < 30 + precio < BB_lower → CALL
-           RSI > 70 + precio > BB_upper → PUT
-    """
-    def __init__(self):
-        super().__init__("Keltner Channel + RSI", 1.3)
-    
-    def generate_signal(self, ind: Optional[IndicatorSet] = None) -> Optional[Dict]:
-        if ind and ind.is_real:
-            rsi   = ind.rsi
-            price = ind.price
-            conf  = _conf_from_extreme(rsi, 10, 30, 70, 90)
-            if conf == 0.0:
-                return None
-            if rsi < 30 and price <= ind.bb_lower * 1.001:
-                return {"type": "CALL", "confidence": conf, "cci": round(ind.cci, 1),
-                        "reason": f"RSI sobreventa real ({rsi:.1f}) + precio < BB inferior"}
-            if rsi > 70 and price >= ind.bb_upper * 0.999:
-                return {"type": "PUT", "confidence": conf, "cci": round(ind.cci, 1),
-                        "reason": f"RSI sobrecompra real ({rsi:.1f}) + precio > BB superior"}
-        return None
+    Breakout de rango usando ATR + EMA21 + histograma MACD.
 
-        # Fallback simulado
-        rsi = ind.rsi if ind else random.uniform(20, 80)
-        if rsi > 68:
-            return {"type": "PUT",  "confidence": round(random.uniform(0.62, 0.74), 2),
-                    "cci": round(random.uniform(80, 120), 1),
-                    "reason": f"RSI sobrecompra ({rsi:.1f}) - Keltner superior tocado"}
-        elif rsi < 32:
-            return {"type": "CALL", "confidence": round(random.uniform(0.64, 0.76), 2),
-                    "cci": round(random.uniform(-120, -80), 1),
-                    "reason": f"RSI sobreventa ({rsi:.1f}) - Keltner inferior tocado"}
+    Filosofía OPUESTA a las estrategias de reversión (RSI/CCI):
+    - RSI/CCI: "precio en extremo → va a revertir al centro"
+    - Esta:    "precio rompió el rango → va a CONTINUAR en esa dirección"
+
+    Esta decorrelación es la clave: cuando RSI/CCI Y esta estrategia coinciden,
+    hay dos marcos teóricos independientes apuntando al mismo lado → señal fuerte.
+
+    Condiciones CALL (breakout alcista):
+      1. precio > ema21 + (atr * 1.2)  — rompió el rango superior
+      2. macd_hist > 0                  — momentum positivo confirma
+      3. atr_pct > 0.04                 — volatilidad real, no ruido lateral
+      4. trend == "bullish"             — EMA confirma dirección
+
+    Condiciones PUT (breakout bajista):
+      1. precio < ema21 - (atr * 1.2)  — rompió el rango inferior
+      2. macd_hist < 0                  — momentum negativo confirma
+      3. atr_pct > 0.04                 — volatilidad real, no ruido lateral
+      4. trend == "bearish"             — EMA confirma dirección
+
+    Grupo ortogonal: breakout_volatility (5º grupo, el más anticorrelacionado).
+    """
+
+    ATR_MULT     = 1.2    # multiplicador del ATR para definir el rango
+    MIN_ATR_PCT  = 0.04   # % mínimo de ATR para filtrar mercados laterales
+
+    def __init__(self):
+        super().__init__("Range Breakout + ATR", 1.2)
+
+    def generate_signal(self, ind: Optional[IndicatorSet] = None) -> Optional[Dict]:
+        if not (ind and ind.is_real):
+            return None
+
+        price     = ind.price
+        ema21     = ind.ema21
+        atr       = ind.atr
+        atr_pct   = ind.atr_pct
+        macd_hist = ind.macd_hist
+        trend     = ind.trend
+
+        # Filtro de volatilidad mínima: descartar mercados planos
+        if atr_pct < self.MIN_ATR_PCT or atr <= 0:
+            return None
+
+        breakout_band = atr * self.ATR_MULT
+        above_range   = price > ema21 + breakout_band
+        below_range   = price < ema21 - breakout_band
+
+        # CALL: breakout alcista confirmado por MACD y tendencia
+        if above_range and macd_hist > 0 and trend == "bullish":
+            # Confianza: qué tan lejos está del rango (más lejos = más fuerte)
+            excess_atr = (price - (ema21 + breakout_band)) / atr
+            conf = round(min(0.58 + excess_atr * 0.08 + abs(macd_hist) * 2, 0.82), 2)
+            return {
+                "type":       "CALL",
+                "confidence": conf,
+                "cci":        round(ind.cci, 1),
+                "reason":     (f"Breakout alcista | precio {price:.5f} > "
+                               f"EMA21+ATR*{self.ATR_MULT} ({ema21 + breakout_band:.5f}) | "
+                               f"MACD hist={macd_hist:.5f}"),
+            }
+
+        # PUT: breakout bajista confirmado por MACD y tendencia
+        if below_range and macd_hist < 0 and trend == "bearish":
+            excess_atr = ((ema21 - breakout_band) - price) / atr
+            conf = round(min(0.58 + excess_atr * 0.08 + abs(macd_hist) * 2, 0.82), 2)
+            return {
+                "type":       "PUT",
+                "confidence": conf,
+                "cci":        round(ind.cci, 1),
+                "reason":     (f"Breakout bajista | precio {price:.5f} < "
+                               f"EMA21-ATR*{self.ATR_MULT} ({ema21 - breakout_band:.5f}) | "
+                               f"MACD hist={macd_hist:.5f}"),
+            }
+
         return None
 
 
@@ -542,7 +585,7 @@ async def lifespan(app: FastAPI):
 
     # ── Estrategias ───────────────────────────────────────────────────────────
     app.state.strategies = {
-        "keltner_rsi":     KeltnerRSIStrategy(),
+        "range_breakout":  RangeBreakoutStrategy(),
         "cci_alligator":   CCIAlligatorStrategy(),
         "rsi_bollinger":   RSIBollingerStrategy(),
         "macd_stochastic": MACDStochasticStrategy(),
@@ -591,23 +634,23 @@ def _cci_sigmoid(cci_abs: float) -> float:
 # pero usan el mismo oscilador (RSI), solo cuentan como 1 grupo, no como 3.
 #
 # Grupos:
-#   rsi_momentum:  Estrategias basadas principalmente en RSI + bandas de precio.
-#                  KeltnerRSI y RSIBollinger son casi idénticas matemáticamente.
-#   cci_reversal:  Reversión basada en CCI (descorrelacionado del RSI).
-#   macd_stoch:    Momentum por histograma MACD + Estocástico (velocidad del precio).
-#   ema_trend:     Tendencia por cruce de medias (direccionalidad, no oscilación).
+#   rsi_momentum:        Oscilador RSI ± Bollinger Bands (reversión a la media).
+#   cci_reversal:        Reversión basada en CCI (descorrelacionado del RSI).
+#   macd_stoch:          Momentum por histograma MACD + Estocástico (velocidad).
+#   ema_trend:           Tendencia por cruce de medias (direccionalidad).
+#   breakout_volatility: Rotura de rango con ATR (filosofía OPUESTA a reversión).
 #
-# Una señal con grupos {rsi_momentum, cci_reversal, ema_trend} es más
-# confiable que {rsi_momentum, rsi_momentum, cci_reversal} aunque ambas
-# tengan el mismo nº de estrategias de acuerdo.
+# Una señal con grupos {rsi_momentum, cci_reversal, breakout_volatility} vale
+# más que {rsi_momentum, rsi_momentum, cci_reversal}: son tres marcos teóricos
+# independientes apuntando al mismo lado.
 _STRATEGY_GROUPS: Dict[str, str] = {
-    "Keltner Channel + RSI": "rsi_momentum",
-    "RSI + Bollinger Bands": "rsi_momentum",   # mismo grupo → no suman doble
+    "Range Breakout + ATR":  "breakout_volatility",  # anticorrelacionada con reversión
+    "RSI + Bollinger Bands": "rsi_momentum",
     "CCI + Alligator":       "cci_reversal",
     "MACD + Stochastic":     "macd_stoch",
     "EMA Crossover":         "ema_trend",
 }
-_TOTAL_GROUPS = len(set(_STRATEGY_GROUPS.values()))  # 4 grupos distintos
+_TOTAL_GROUPS = len(set(_STRATEGY_GROUPS.values()))  # 5 grupos distintos
 
 
 def _orthogonal_score(strategies_agreeing: list) -> float:
@@ -1315,13 +1358,13 @@ async def get_strategies(request: Request):
     
     strategy_info = [
         {
-            "id": "keltner_rsi",
-            "name": "Keltner Channel + RSI",
-            "timeframe": "15s - 1m",
-            "win_rate_expected": "70-75%",
-            "signals_per_day": "15-25",
-            "enabled": strategies["keltner_rsi"].enabled,
-            "weight": strategies["keltner_rsi"].weight
+            "id": "range_breakout",
+            "name": "Range Breakout + ATR",
+            "timeframe": "1m - 5m",
+            "win_rate_expected": "65-72%",
+            "signals_per_day": "8-15",
+            "enabled": strategies["range_breakout"].enabled,
+            "weight": strategies["range_breakout"].weight
         },
         {
             "id": "cci_alligator",
