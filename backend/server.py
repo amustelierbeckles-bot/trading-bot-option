@@ -585,27 +585,87 @@ def _cci_sigmoid(cci_abs: float) -> float:
     return 1.0 - math.exp(-cci_abs / 200.0)
 
 
+# ── Mapa de grupos ortogonales por estrategia ────────────────────────────────
+# Agrupa las estrategias por "tipo de indicador subyacente".
+# El objetivo es penalizar el consenso falso: si 3 estrategias coinciden
+# pero usan el mismo oscilador (RSI), solo cuentan como 1 grupo, no como 3.
+#
+# Grupos:
+#   rsi_momentum:  Estrategias basadas principalmente en RSI + bandas de precio.
+#                  KeltnerRSI y RSIBollinger son casi idénticas matemáticamente.
+#   cci_reversal:  Reversión basada en CCI (descorrelacionado del RSI).
+#   macd_stoch:    Momentum por histograma MACD + Estocástico (velocidad del precio).
+#   ema_trend:     Tendencia por cruce de medias (direccionalidad, no oscilación).
+#
+# Una señal con grupos {rsi_momentum, cci_reversal, ema_trend} es más
+# confiable que {rsi_momentum, rsi_momentum, cci_reversal} aunque ambas
+# tengan el mismo nº de estrategias de acuerdo.
+_STRATEGY_GROUPS: Dict[str, str] = {
+    "Keltner Channel + RSI": "rsi_momentum",
+    "RSI + Bollinger Bands": "rsi_momentum",   # mismo grupo → no suman doble
+    "CCI + Alligator":       "cci_reversal",
+    "MACD + Stochastic":     "macd_stoch",
+    "EMA Crossover":         "ema_trend",
+}
+_TOTAL_GROUPS = len(set(_STRATEGY_GROUPS.values()))  # 4 grupos distintos
+
+
+def _orthogonal_score(strategies_agreeing: list) -> float:
+    """
+    Mide la DIVERSIDAD real del consenso, no solo la cantidad de estrategias.
+
+    Retorna un valor entre 0.0 y 1.0:
+    - 1.0 → todas las estrategias provienen de grupos ortogonales distintos
+    - 0.5 → consenso parcialmente diverso
+    - 0.25 → consenso concentrado en un solo tipo de indicador (señal débil)
+
+    Ejemplos:
+      ["CCI + Alligator", "EMA Crossover", "MACD + Stochastic"]
+        → grupos: {cci_reversal, ema_trend, macd_stoch} → 3/4 = 0.75 ✓ Fuerte
+
+      ["Keltner Channel + RSI", "RSI + Bollinger Bands", "CCI + Alligator"]
+        → grupos: {rsi_momentum, rsi_momentum, cci_reversal} → 2/4 = 0.50
+        → Aunque son 3 estrategias, la diversidad real es baja
+    """
+    if not strategies_agreeing:
+        return 0.0
+
+    unique_groups = set()
+    for strat_name in strategies_agreeing:
+        group = _STRATEGY_GROUPS.get(strat_name, f"unknown_{strat_name}")
+        unique_groups.add(group)
+
+    return round(len(unique_groups) / _TOTAL_GROUPS, 4)
+
+
 def _quality_score(signal: dict, symbol: str = None,
                    ind: Optional[IndicatorSet] = None) -> float:
     """
-    Quality Score ponderado (0-1).
+    Quality Score ponderado con Consenso Ortogonal (0-1).
 
     Componentes:
-    - Confluencia real (nº estrategias coincidentes / 5)  → 30 %
-    - Confianza promedio ponderada del ensemble            → 30 %
-    - Fuerza del CCI (normalización sigmoidal)             → 15 %
-    - Alineación con micro-tendencia del par               → 15 %
-    - Bonus de consenso (100% acuerdo entre estrategias)   → 10 %
+    - Confluencia ortogonal (diversidad de grupos de indicadores)  → 30 %
+      Reemplaza la simple cuenta de estrategias.
+      Penaliza el "falso consenso" cuando múltiples estrategias usan el mismo
+      oscilador base (ej. KeltnerRSI + RSIBollinger son casi idénticas).
+    - Confianza promedio ponderada del ensemble                     → 30 %
+    - Fuerza del CCI (normalización sigmoidal)                      → 15 %
+    - Alineación con micro-tendencia del par                        → 15 %
+    - Bonus de consenso (100% acuerdo entre estrategias)            → 10 %
+    - Bonus por datos reales                                        → +5 % (extra)
     """
-    confidence    = signal.get("confidence", 0)
-    cci_abs       = abs(signal.get("cci", 0))
-    n_agreeing    = len(signal.get("strategies_agreeing", []))
-    n_total       = signal.get("n_total", max(n_agreeing, 1))
-    signal_type   = signal.get("type", "")
+    confidence         = signal.get("confidence", 0)
+    cci_abs            = abs(signal.get("cci", 0))
+    strategies_agreeing = signal.get("strategies_agreeing", [])
+    n_agreeing         = len(strategies_agreeing)
+    n_total            = signal.get("n_total", max(n_agreeing, 1))
+    signal_type        = signal.get("type", "")
 
-    confluence    = n_agreeing / 5.0
-    cci_factor    = _cci_sigmoid(cci_abs)
-    consensus     = 1.0 if n_agreeing == n_total else 0.0
+    # Confluencia ortogonal: reemplaza n_agreeing/5 con diversidad real de grupos
+    ortho_confluence = _orthogonal_score(strategies_agreeing)
+
+    cci_factor = _cci_sigmoid(cci_abs)
+    consensus  = 1.0 if n_agreeing == n_total else 0.0
 
     # Alineación con la tendencia (real si tenemos indicadores, simulada si no)
     trend_score = 0.5
@@ -620,12 +680,12 @@ def _quality_score(signal: dict, symbol: str = None,
     real_bonus = 0.05 if (ind and ind.is_real) else 0.0
 
     return round(
-        confluence  * 0.30 +
-        confidence  * 0.30 +
-        cci_factor  * 0.15 +
-        trend_score * 0.15 +
-        consensus   * 0.10 +
-        real_bonus,           # hasta +0.05 por datos reales
+        ortho_confluence * 0.30 +   # diversidad real de grupos ortogonales
+        confidence       * 0.30 +
+        cci_factor       * 0.15 +
+        trend_score      * 0.15 +
+        consensus        * 0.10 +
+        real_bonus,
         4
     )
 

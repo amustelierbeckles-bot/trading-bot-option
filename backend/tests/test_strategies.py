@@ -1,5 +1,5 @@
 import pytest
-from server import CCIAlligatorStrategy, IndicatorSet
+from server import CCIAlligatorStrategy, _orthogonal_score, IndicatorSet
 
 class MockIndicatorSet:
     def __init__(self, cci=0, trend="neutral", is_real=True):
@@ -43,6 +43,52 @@ def test_cci_alligator_strategy():
     # Caso 3: CCI Normal (-50) -> Ninguna señal
     ind_normal = MockIndicatorSet(cci=-50, trend="neutral")
     assert strategy.generate_signal(ind_normal) is None
+
+def test_orthogonal_score_diverse():
+    """
+    Verifica que 3 estrategias de grupos distintos reciban un score alto.
+    CCI (cci_reversal) + EMA (ema_trend) + MACD (macd_stoch) = 3 grupos / 4 total = 0.75
+    """
+    strategies = ["CCI + Alligator", "EMA Crossover", "MACD + Stochastic"]
+    score = _orthogonal_score(strategies)
+    assert score == 0.75, f"Esperado 0.75, obtenido {score}"
+
+def test_orthogonal_score_redundant():
+    """
+    Verifica que estrategias del mismo grupo (rsi_momentum) no sumen doble.
+    KeltnerRSI + RSIBollinger son el mismo grupo → 1 grupo / 4 total = 0.25
+    """
+    strategies = ["Keltner Channel + RSI", "RSI + Bollinger Bands"]
+    score = _orthogonal_score(strategies)
+    assert score == 0.25, f"Esperado 0.25, obtenido {score}"
+
+def test_orthogonal_score_mixed():
+    """
+    Verifica el caso mixto: 2 del mismo grupo + 1 distinto = 2 grupos / 4 = 0.50
+    Aunque hay 3 estrategias, la diversidad real es solo 50%.
+    """
+    strategies = ["Keltner Channel + RSI", "RSI + Bollinger Bands", "CCI + Alligator"]
+    score = _orthogonal_score(strategies)
+    assert score == 0.50, f"Esperado 0.50, obtenido {score}"
+
+def test_orthogonal_score_maximum():
+    """
+    Verifica que 4 estrategias de grupos distintos = score máximo 1.0
+    """
+    strategies = [
+        "Keltner Channel + RSI",  # rsi_momentum
+        "CCI + Alligator",        # cci_reversal
+        "MACD + Stochastic",      # macd_stoch
+        "EMA Crossover",          # ema_trend
+    ]
+    score = _orthogonal_score(strategies)
+    assert score == 1.0, f"Esperado 1.0, obtenido {score}"
+
+def test_orthogonal_score_empty():
+    """
+    Verifica que una lista vacía retorne 0.0 sin errores.
+    """
+    assert _orthogonal_score([]) == 0.0
 
 def test_cci_alligator_fallback():
     """
