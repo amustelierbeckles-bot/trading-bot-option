@@ -451,6 +451,57 @@ class TwelveDataProvider:
             return cached["indicators"].price
         return None
 
+    # ── Precio fresco para auditoría (bypass de caché) ───────────────────────
+    async def get_price_for_audit(self, otc_symbol: str) -> Optional[float]:
+        """
+        Obtiene el precio de cierre DEFINITIVO para verificar el resultado
+        de una señal de 2 minutos.
+
+        A diferencia de get_cached_price/get_price_sample, este método:
+        1. INVALIDA el caché del par antes de hacer la petición
+        2. Pide 3 velas frescas a la API
+        3. Retorna el cierre de la 2ª vela (penúltima), que es la primera
+           que está DEFINITIVAMENTE cerrada en nuestro horizonte de 2 minutos.
+
+        Por qué la penúltima:
+        - La última vela puede estar en formación (aún no cerró el minuto)
+        - La penúltima siempre está cerrada y es la más reciente con certeza
+
+        Retorna None si la API no está configurada o sin créditos.
+        """
+        if not self.is_configured or not self._within_limit():
+            return None
+
+        twelve_sym = OTC_TO_TWELVE.get(otc_symbol)
+        if not twelve_sym:
+            return None
+
+        # Invalida el caché para forzar una petición real
+        self._cache.pop(otc_symbol, None)
+
+        try:
+            candles = await self._fetch_candles(twelve_sym, count=3)
+            if not candles or len(candles) < 2:
+                return None
+
+            # Penúltima vela = definitivamente cerrada
+            closed_candle = candles[-2]
+            self._req_today += 1
+
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "🎯 Precio auditoría %s | candle_time=%s | close=%.5f",
+                otc_symbol, closed_candle.time, closed_candle.close
+            )
+            return closed_candle.close
+
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "⚠️  Error get_price_for_audit %s: %s", otc_symbol, exc
+            )
+            return None
+
     # ── Muestreo de precio en tiempo real para MAE ────────────────────────────
     async def get_price_sample(self, otc_symbol: str) -> Optional[float]:
         """

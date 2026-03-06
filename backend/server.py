@@ -3299,37 +3299,45 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
                                  audit_id: str, app) -> Optional[str]:
     """
     Verifica automáticamente el resultado de la señal consultando el
-    precio real en Twelve Data después del tiempo de expiración.
+    precio de cierre REAL en Twelve Data después del tiempo de expiración.
 
-    Lógica:
-    - Obtiene precio actual del par (de caché o nueva petición)
-    - CALL: WIN si precio_cierre > precio_entrada
-    - PUT:  WIN si precio_cierre < precio_entrada
-    - Actualiza MongoDB con resultado, precio de cierre y timestamp
+    FIX v3.1: Usa get_price_for_audit() que invalida el caché y pide la
+    penúltima vela (definitivamente cerrada), eliminando la corrupción
+    que ocurría cuando el caché devolvía el mismo precio de entrada.
+
+    Flujo:
+    1. Solicita vela fresca (bypass caché) via get_price_for_audit()
+    2. Si no hay API, intenta fallback de precio simulado con aviso
+    3. Guarda resultado con confidence_level para filtrar en Win Rate
+    4. CALL: WIN si close > entry  |  PUT: WIN si close < entry
     """
     symbol      = signal.get("symbol", "")
     entry_price = signal.get("entry_price", signal.get("price", 0))
     sig_type    = signal.get("type", "")
 
     if not entry_price or not symbol:
+        logger.warning("⚠️  Auditoría abortada — datos de señal incompletos")
         return None
 
     try:
         provider    = get_provider()
-        close_price = entry_price  # fallback
+        close_price = None
+        confidence  = "high"   # "high" = dato real, "low" = simulado
 
+        # ── Precio fresco con bypass de caché ─────────────────────────────────
+        # Esto resuelve el bug anterior donde get_cached_price() retornaba el
+        # mismo precio de entrada porque el caché (TTL=300s) aún no había expirado
+        # a los 125s de espera. Ahora siempre pedimos la vela cerrada real.
         if provider and provider.is_configured:
-            # Usa el caché del proveedor si está fresco (< 5 min)
-            cached_price = provider.get_cached_price(symbol)
-            if cached_price and cached_price != entry_price:
-                close_price = cached_price
-            else:
-                # Hace UNA petición nueva (solo si el caché expiró)
-                fresh_ind = await provider.get_indicators(symbol)
-                if fresh_ind:
-                    close_price = fresh_ind.price
-        else:
+            close_price = await provider.get_price_for_audit(symbol)
+
+        if close_price is None:
+            # Fallback: precio simulado con momentum actual
+            # Marcamos como "low" para que el Win Rate pueda filtrar estos trades
             close_price = get_asset_price(symbol)
+            confidence  = "low"
+            logger.warning("⚠️  Auditoría %s — usando precio simulado (API sin créditos)",
+                           symbol)
 
         # Determina WIN/LOSS
         if sig_type == "CALL":
@@ -3337,8 +3345,18 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
         else:
             outcome = "win" if close_price < entry_price else "loss"
 
-        pip_diff   = round((close_price - entry_price) / entry_price * 10000, 1)
-        now        = datetime.utcnow()
+        pip_diff = round((close_price - entry_price) / entry_price * 10000, 1)
+        now      = datetime.utcnow()
+
+        update_fields = {
+            "result":             outcome,
+            "close_price":        close_price,
+            "pip_diff":           pip_diff,
+            "verified_at":        now,
+            "verified_at_local":  _local_time(now).strftime("%Y-%m-%dT%H:%M:%S") + " UTC-5",
+            "source":             "auto_audit_verified",
+            "audit_confidence":   confidence,   # nuevo campo para filtrar en Win Rate
+        }
 
         # Actualiza en MongoDB
         if app.state.use_mongo and audit_id:
@@ -3346,28 +3364,21 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
             try:
                 await app.state.db.trades.update_one(
                     {"_id": ObjectId(audit_id)},
-                    {"$set": {
-                        "result":           outcome,
-                        "close_price":      close_price,
-                        "pip_diff":         pip_diff,
-                        "verified_at":      now,
-                        "verified_at_local": _local_time(now).strftime("%Y-%m-%dT%H:%M:%S") + " UTC-5",
-                        "source":           "auto_audit_verified",
-                    }}
+                    {"$set": update_fields}
                 )
-            except Exception:
-                pass
+            except Exception as mongo_err:
+                logger.warning("⚠️  Error actualizando MongoDB: %s", mongo_err)
         else:
-            # Actualiza en memoria
             for t in app.state.trades_store:
                 if t.get("id") == audit_id or t.get("signal_id") == signal.get("id", ""):
-                    t["result"]      = outcome
-                    t["close_price"] = close_price
+                    t.update(update_fields)
                     break
 
-        logger.info("✅ Auditoría verificada | %s %s | entrada=%.5f cierre=%.5f | %s | %+.1f pips",
-                    sig_type, symbol, entry_price, close_price,
-                    outcome.upper(), pip_diff)
+        logger.info(
+            "✅ Auditoría verificada | %s %s | entrada=%.5f cierre=%.5f | %s | %+.1f pips [%s]",
+            sig_type, symbol, entry_price, close_price,
+            outcome.upper(), pip_diff, confidence
+        )
         return outcome
 
     except Exception as e:
