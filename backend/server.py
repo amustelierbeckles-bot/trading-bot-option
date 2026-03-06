@@ -1330,62 +1330,87 @@ async def scan_signals(
     request: Request,
     auth: bool = Depends(verify_api_key)
 ):
-    ensemble      = request.app.state.ensemble
-    use_mongo     = request.app.state.use_mongo
-    db            = request.app.state.db
-    store         = request.app.state.signals_store
-    all_signals   = []
-    
+    ensemble    = request.app.state.ensemble
+    use_mongo   = request.app.state.use_mongo
+    db          = request.app.state.db
+    store       = request.app.state.signals_store
+    all_signals = []
+
+    # FIX 1: Usar el umbral dinámico calibrado en lugar de un valor hardcodeado.
+    # _dynamic_min_quality es actualizado continuamente por el auto-scan
+    # usando el historial real de trades, por lo que refleja el rendimiento actual.
+    # Si aún no se ha calibrado, usar MIN_QUALITY_BASE como fallback seguro.
+    effective_threshold = max(_dynamic_min_quality, scan_request.min_confidence)
+
     for symbol in scan_request.symbols:
-        signal = ensemble.get_consensus_signal()
-        score  = _quality_score(signal, symbol) if signal else 0
-        
-        if signal and signal["confidence"] >= scan_request.min_confidence and score >= 0.68:
-            price  = get_asset_price(symbol)
-            now    = datetime.utcnow()
+        # FIX 2: Intentar obtener indicadores reales antes de puntuar la señal.
+        # Sin ind, el quality_score siempre usaría trend_score=0.5 (neutro)
+        # y perdería el real_bonus de +0.05, subestimando señales reales.
+        try:
+            ind = await get_indicators_for(symbol, "1min")
+        except Exception:
+            ind = get_simulated_indicators(symbol)
 
-            signal_doc = {
-                "id":                  str(int(now.timestamp() * 1000)) + "_" + symbol,
-                "symbol":              symbol,
-                "asset_name":          get_asset_name(symbol),
-                "type":                signal["type"],
-                "price":               price,
-                "entry_price":         price,
-                "timestamp":           now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-                "confidence":          signal["confidence"],
-                "cci":                 signal["cci"],
-                "strength":            signal["strength"],
-                "strategies_agreeing": signal["strategies_agreeing"],
-                "reason":              signal["reason"],
-                "reasons":             signal["reasons"],
-                "consensus_score":     signal["consensus_score"],
-                "method":              "ensemble",
-                "payout":              round(85.0 + signal["confidence"] * 10, 1),
-                "market_quality":      round(signal["consensus_score"] * 100, 1),
-                "active":              True,
-                "pocket_option_url":   generate_pocket_option_url(symbol),
-                "created_at":          now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-            }
+        signal = ensemble.get_consensus_signal(ind)
+        score  = _quality_score(signal, symbol, ind) if signal else 0
 
-            if use_mongo:
-                doc_for_db = {**signal_doc, "created_at": now}
-                doc_for_db.pop("id", None)
-                result = await db.signals.insert_one(doc_for_db)
-                signal_doc["id"] = str(result.inserted_id)
-            else:
-                # Guarda en memoria (máx. 200 señales)
-                store.append(signal_doc)
-                if len(store) > 200:
-                    store.pop(0)
+        if not signal:
+            continue
+        if signal["confidence"] < scan_request.min_confidence:
+            continue
+        if score < effective_threshold:
+            continue
 
-                all_signals.append(signal_doc)
-    
-            # ── Notificación Telegram + auditoría autónoma ────────────────
-            only_fire = os.getenv("TELEGRAM_ONLY_FIRE", "false").lower() == "true"
-            is_fire   = score >= 0.75 or len(signal.get("strategies_agreeing", [])) >= 3
-            if not only_fire or is_fire:
-                asyncio.create_task(_send_signal_telegram(signal_doc, request.app))
+        price = ind.price if (ind and ind.is_real) else get_asset_price(symbol)
+        now   = datetime.utcnow()
 
+        signal_doc = {
+            "id":                  str(int(now.timestamp() * 1000)) + "_" + symbol,
+            "symbol":              symbol,
+            "asset_name":          get_asset_name(symbol),
+            "type":                signal["type"],
+            "price":               price,
+            "entry_price":         price,
+            "timestamp":           now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            "confidence":          signal["confidence"],
+            "cci":                 signal["cci"],
+            "strength":            signal["strength"],
+            "strategies_agreeing": signal["strategies_agreeing"],
+            "reason":              signal["reason"],
+            "reasons":             signal["reasons"],
+            "consensus_score":     signal["consensus_score"],
+            "quality_score":       score,           # FIX 4: incluir score en el doc
+            "method":              "ensemble",
+            "payout":              round(85.0 + signal["confidence"] * 10, 1),
+            "market_quality":      round(signal["consensus_score"] * 100, 1),
+            "data_source":         "real" if (ind and ind.is_real) else "simulated",
+            "active":              True,
+            "pocket_option_url":   generate_pocket_option_url(symbol),
+            "created_at":          now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+        }
+
+        if use_mongo:
+            doc_for_db = {**signal_doc, "created_at": now}
+            doc_for_db.pop("id", None)
+            result = await db.signals.insert_one(doc_for_db)
+            signal_doc["id"] = str(result.inserted_id)
+        else:
+            store.append(signal_doc)
+            if len(store) > 200:
+                store.pop(0)
+
+        # FIX 3: all_signals.append fuera del bloque else para que funcione
+        # también cuando MongoDB está activo (antes siempre retornaba lista vacía).
+        all_signals.append(signal_doc)
+
+        # ── Notificación Telegram ──────────────────────────────────────────
+        only_fire = os.getenv("TELEGRAM_ONLY_FIRE", "false").lower() == "true"
+        is_fire   = score >= 0.75 or len(signal.get("strategies_agreeing", [])) >= 3
+        if not only_fire or is_fire:
+            asyncio.create_task(_send_signal_telegram(signal_doc, request.app))
+
+    logger.info("🔍 Scan manual: %d señales generadas (umbral: %.2f)",
+                len(all_signals), effective_threshold)
     return {"success": True, "new_signals": len(all_signals), "signals": all_signals}
 
 def _parse_naive_utc(ts: str) -> datetime:
