@@ -24,8 +24,15 @@ import math
 import asyncio
 import httpx
 import time
+import json
 from pathlib import Path
 from dotenv import load_dotenv
+
+try:
+    import redis.asyncio as aioredis
+    _REDIS_AVAILABLE = True
+except ImportError:
+    _REDIS_AVAILABLE = False
 
 # Import time for rate limiting
 time_module = time
@@ -40,6 +47,71 @@ from data_provider import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# WIN RATE CACHE (Redis → in-memory fallback)
+# ============================================================================
+# Clave formato:  "wr:{scope}:{window}"
+# Ej:  "wr:global:1h"  |  "wr:OTC_EURUSD:1h"  |  "wr:london:session"
+# TTL: 300 segundos (5 minutos)
+# Cuando Redis no está disponible se usa un dict en memoria con timestamp.
+
+_WR_CACHE_TTL = 300   # segundos
+_wr_mem_cache: Dict[str, tuple] = {}   # key → (value, expires_at)
+
+
+async def _wr_cache_get(redis, key: str) -> Optional[dict]:
+    """Lee Win Rate del caché. Retorna dict o None si expirado/inexistente."""
+    try:
+        if redis is not None:
+            raw = await redis.get(key)
+            return json.loads(raw) if raw else None
+    except Exception:
+        pass
+    # Fallback in-memory
+    entry = _wr_mem_cache.get(key)
+    if entry and time.time() < entry[1]:
+        return entry[0]
+    return None
+
+
+async def _wr_cache_set(redis, key: str, value: dict, ttl: int = _WR_CACHE_TTL) -> None:
+    """Escribe Win Rate en caché con TTL."""
+    try:
+        if redis is not None:
+            await redis.set(key, json.dumps(value), ex=ttl)
+            return
+    except Exception:
+        pass
+    # Fallback in-memory
+    _wr_mem_cache[key] = (value, time.time() + ttl)
+
+
+async def _wr_cache_invalidate(redis, pattern: str) -> None:
+    """Invalida todas las claves que empiecen con el patrón dado."""
+    try:
+        if redis is not None:
+            keys = await redis.keys(f"{pattern}*")
+            if keys:
+                await redis.delete(*keys)
+            return
+    except Exception:
+        pass
+    # Fallback in-memory: limpia claves que comiencen con el patrón
+    to_del = [k for k in _wr_mem_cache if k.startswith(pattern)]
+    for k in to_del:
+        _wr_mem_cache.pop(k, None)
+
+
+def _hour_bucket(dt: datetime) -> str:
+    """Devuelve 'YYYY-MM-DDTHH' para indexar Win Rate por hora."""
+    return dt.strftime("%Y-%m-%dT%H")
+
+
+def _day_bucket(dt: datetime) -> str:
+    """Devuelve 'YYYY-MM-DD' para indexar Win Rate por día."""
+    return dt.strftime("%Y-%m-%d")
+
 
 # ============================================================================
 # MODELS
@@ -578,7 +650,37 @@ async def lifespan(app: FastAPI):
         app.state.db        = None
         app.state.use_mongo = False
 
-    # Almacenamiento en memoria (fallback sin MongoDB)
+    # ── Redis (opcional) ──────────────────────────────────────────────────────
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    app.state.redis = None
+    if _REDIS_AVAILABLE:
+        try:
+            r = aioredis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
+            await r.ping()
+            app.state.redis = r
+            logger.info("✅ Redis conectado en %s", redis_url)
+        except Exception as re:
+            logger.warning("⚠️  Redis no disponible (%s) — usando caché in-memory", re)
+
+    # ── Índices MongoDB ────────────────────────────────────────────────────────
+    if app.state.use_mongo:
+        try:
+            db = app.state.db
+            # signals: queries de Win Rate por hora, par y sesión
+            await db.signals.create_index([("symbol", 1), ("hour_bucket", 1), ("result", 1)])
+            await db.signals.create_index([("session", 1), ("result", 1), ("created_at", -1)])
+            await db.signals.create_index([("day_bucket", 1), ("symbol", 1)])
+            await db.signals.create_index([("audit_confidence", 1), ("result", 1)])
+            await db.signals.create_index([("created_at", -1)])  # paginación reciente
+            # trades: queries de auditoría
+            await db.trades.create_index([("symbol", 1), ("result", 1), ("created_at", -1)])
+            await db.trades.create_index([("signal_id", 1)], unique=True, sparse=True)
+            await db.trades.create_index([("audit_confidence", 1), ("result", 1)])
+            logger.info("✅ Índices MongoDB creados/verificados")
+        except Exception as idx_err:
+            logger.warning("⚠️  Error creando índices: %s", idx_err)
+
+    # ── Almacenamiento en memoria (fallback sin MongoDB) ───────────────────────
     app.state.signals_store: list = []
     app.state.trades_store:  list = []  # historial de operaciones
     app.state.pre_alerts_store: dict = {}  # symbol → pre_alert_doc
@@ -1106,7 +1208,12 @@ async def _auto_scan_loop(app: "FastAPI"):
                     "session":             session["name"],
                     "active":              True,
                     "created_at":          ts,
-                    # ── Nuevos campos v2.3 ─────────────────────────────────────
+                    # ── v4.0: buckets desnormalizados para queries O(1) ─────────
+                    "hour_bucket":         _hour_bucket(emit_time),
+                    "day_bucket":          _day_bucket(emit_time),
+                    "data_source":         "real" if (ind and ind.is_real) else "simulated",
+                    "audit_confidence":    "high" if (ind and ind.is_real) else "low",
+                    # ── Campos v2.3 ────────────────────────────────────────────
                     "data_freshness_ms":   data_freshness_ms,
                     "scan_elapsed_ms":     round(cycle_elapsed * 1000),
                     "fetch_elapsed_ms":    round(fetch_elapsed * 1000),
@@ -2884,6 +2991,113 @@ async def get_pair_win_rate(symbol: str, request: Request, minutes: int = 30):
     return result
 
 
+@app.get("/v1/stats")
+async def get_stats(request: Request, window: str = "1h"):
+    """
+    Win Rate consolidado por par y por sesión, con caché Redis (TTL 5 min).
+
+    ?window=1h   → último 1 hora  (default)
+    ?window=4h   → últimas 4 horas
+    ?window=24h  → últimas 24 horas
+
+    Respuesta: {
+      "window": "1h",
+      "global": {"total": N, "wins": N, "win_rate": 72.5, "profit_factor": 1.83},
+      "by_pair": {"OTC_EURUSD": {"total":N, "wins":N, "win_rate":N, "degraded":bool}},
+      "by_session": {"london": {"total":N, "wins":N, "win_rate":N}},
+      "cached": true/false,
+      "generated_at": "2026-03-06T14:00:00Z"
+    }
+    """
+    _VALID_WINDOWS = {"1h": 60, "4h": 240, "24h": 1440}
+    if window not in _VALID_WINDOWS:
+        window = "1h"
+    minutes = _VALID_WINDOWS[window]
+
+    cache_key = f"wr:stats:{window}"
+    redis = getattr(request.app.state, "redis", None)
+
+    # ── Lee caché ─────────────────────────────────────────────────────────────
+    cached = await _wr_cache_get(redis, cache_key)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    # ── Calcula desde la fuente de verdad ─────────────────────────────────────
+    now    = datetime.utcnow()
+    cutoff = now - timedelta(minutes=minutes)
+
+    use_mongo = request.app.state.use_mongo
+    if use_mongo:
+        cursor = request.app.state.db.trades.find({
+            "result":           {"$in": ["win", "loss"]},
+            "audit_confidence": "high",           # solo datos verificados con API real
+            "created_at":       {"$gte": cutoff},
+        })
+        trades = await cursor.to_list(5000)
+        for t in trades:
+            t["id"] = str(t.pop("_id", ""))
+            if isinstance(t.get("created_at"), datetime):
+                t["created_at"] = t["created_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    else:
+        trades = [
+            t for t in request.app.state.trades_store
+            if t.get("result") in ("win", "loss")
+            and t.get("audit_confidence", "high") == "high"
+            and _try_parse_ts(t.get("created_at", "")) >= cutoff
+        ]
+
+    # ── Estadísticas globales ──────────────────────────────────────────────────
+    def _stats(subset: list) -> dict:
+        total  = len(subset)
+        wins   = sum(1 for t in subset if t.get("result") == "win")
+        losses = total - wins
+        wr     = round(wins / total * 100, 1) if total else 0.0
+        pf_num = sum(t.get("payout", 85) for t in subset if t.get("result") == "win")
+        pf_den = losses * 100
+        return {
+            "total":         total,
+            "wins":          wins,
+            "losses":        losses,
+            "win_rate":      wr,
+            "profit_factor": round(pf_num / pf_den, 2) if pf_den > 0 else 0.0,
+        }
+
+    global_stats = _stats(trades)
+
+    # ── Por par ────────────────────────────────────────────────────────────────
+    by_pair: dict = {}
+    for sym in {t.get("symbol", "") for t in trades if t.get("symbol")}:
+        subset = [t for t in trades if t.get("symbol") == sym]
+        s = _stats(subset)
+        s["asset_name"] = subset[0].get("asset_name", sym)
+        # "degraded" → si Win Rate < 50%, señales de ese par deben ser más conservadoras
+        s["degraded"]   = s["win_rate"] < 50.0 and s["total"] >= 5
+        by_pair[sym]    = s
+
+    # ── Por sesión ────────────────────────────────────────────────────────────
+    by_session: dict = {}
+    for sess in ("london", "newyork", "asia", "off"):
+        subset = [t for t in trades if t.get("session", "") == sess]
+        if subset:
+            by_session[sess] = _stats(subset)
+
+    result = {
+        "window":       window,
+        "minutes":      minutes,
+        "global":       global_stats,
+        "by_pair":      by_pair,
+        "by_session":   by_session,
+        "cached":       False,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+    # ── Escribe en caché ───────────────────────────────────────────────────────
+    await _wr_cache_set(redis, cache_key, result)
+
+    return result
+
+
 @app.post("/api/risk/reset-circuit-breaker")
 async def reset_circuit_breaker(request: Request):
     """
@@ -3422,6 +3636,16 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
             sig_type, symbol, entry_price, close_price,
             outcome.upper(), pip_diff, confidence
         )
+
+        # Invalida el caché de Win Rate para este par y global
+        # → la próxima consulta recalculará con el resultado fresco
+        try:
+            redis = getattr(app.state, "redis", None)
+            await _wr_cache_invalidate(redis, f"wr:{symbol}")
+            await _wr_cache_invalidate(redis, "wr:global")
+        except Exception:
+            pass
+
         return outcome
 
     except Exception as e:
