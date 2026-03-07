@@ -8,6 +8,7 @@ import {
   SIGNAL_DURATION_SECONDS, EXPIRY_MINUTES, BACKEND_URL,
   getAssetSearchName, openPocketOption,
 } from "../utils/signalCardUtils";
+import { appendWLResult } from "../utils/wlHistory";
 
 export default function useSignalCard(signal, onOperate) {
   const [timeRemaining, setTimeRemaining] = useState(null);
@@ -63,6 +64,11 @@ export default function useSignalCard(signal, onOperate) {
         }),
       });
       setTradeResult(result);
+      // Persiste en localStorage → dispara wl-update → PairCard se actualiza
+      appendWLResult(signal.symbol, result, {
+        quality_score: signal.quality_score || 0,
+        signal_type:   signal.type || signal.signal_type || "",
+      });
       toast.success(
         result === "win" ? "✅ ¡Operación ganadora registrada!" : "📊 Operación registrada",
         { duration: 3000 }

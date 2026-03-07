@@ -1,12 +1,19 @@
 /**
- * PairCard.jsx — Tarjeta de par OTC con precio, sparkline e indicadores
+ * PairCard.jsx — Tarjeta de par OTC con precio, sparkline, indicadores
+ * y historial W/L persistido en localStorage.
+ *
+ * v4.0: Se añade la sección de historial W/L:
+ *   - Cuadros coloreados (verde=W, rojo=L) con los últimos resultados
+ *   - Badge con Win Rate % calculado sobre todos los resultados del par
+ *   - Tooltip al hover sobre el badge mostrando distribución W/L
  */
-import { memo } from "react";
+import { memo, useState } from "react";
 import { T, sc, fmt } from "../../utils/dashboardUtils";
 import { RText } from "./Primitives";
 import { Spark } from "./Widgets";
+import { readWLHistory, getWinRate } from "../../utils/wlHistory";
 
-export const PairCard = memo(({ sym, data, sig, pre, hovTerm, setHovTerm, onSelect, selected, maeAlert }) => {
+export const PairCard = memo(({ sym, data, sig, pre, hovTerm, setHovTerm, onSelect, selected, maeAlert, wlVersion }) => {
   const hasSig = !!sig;
   const hasPre = !!pre && !hasSig;
   const chg    = data?.change_pct;
@@ -17,6 +24,14 @@ export const PairCard = memo(({ sym, data, sig, pre, hovTerm, setHovTerm, onSele
   const ind    = data?.indicators || {};
   const prices = data?.prices     || [];
 
+  // ── Historial W/L ─────────────────────────────────────────────────────────
+  // wlVersion como dependencia implícita: cuando cambia, memo() re-evalúa
+  // porque la prop cambia → readWLHistory devuelve los datos frescos.
+  const history  = readWLHistory(sym);           // leyendo localStorage
+  const winRate  = getWinRate(sym);              // null si no hay datos
+  const recentWL = history.slice(-10);           // últimos 10 para mostrar
+  const [wrHov, setWrHov] = useState(false);
+
   const tags = [
     { k: "RSI", v: ind.rsi     != null ? ind.rsi.toFixed(0)               : null },
     { k: "BB",  v: ind.bb_pct  != null ? `${(ind.bb_pct*100).toFixed(0)}%`: null },
@@ -24,6 +39,12 @@ export const PairCard = memo(({ sym, data, sig, pre, hovTerm, setHovTerm, onSele
     { k: "ATR", v: ind.atr_pct != null ? (ind.atr_pct*100).toFixed(3)     : null },
     { k: "MAE", v: ind.mae     != null ? ind.mae.toFixed(1)                : null },
   ];
+
+  // Color del Win Rate badge
+  const wrColor = winRate == null ? T.dim
+    : winRate >= 65 ? T.call
+    : winRate >= 50 ? T.fire
+    : T.put;
 
   return (
     <div
@@ -101,6 +122,71 @@ export const PairCard = memo(({ sym, data, sig, pre, hovTerm, setHovTerm, onSele
           );
         })}
       </div>
+
+      {/* ── Historial W/L ──────────────────────────────────────────────────── */}
+      {recentWL.length > 0 && (
+        <div
+          style={{ display: "flex", alignItems: "center", gap: "2px", marginTop: "1px" }}
+          onClick={e => e.stopPropagation()}
+        >
+          {/* Cuadros W/L */}
+          <div style={{ display: "flex", gap: "1px", flex: 1, minWidth: 0 }}>
+            {recentWL.map((entry, i) => (
+              <div key={i} style={{
+                width: "10px", height: "10px", flexShrink: 0,
+                background: entry.r === "W" ? `${T.call}22` : `${T.put}22`,
+                border:     `1px solid ${entry.r === "W" ? T.call : T.put}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: "6px", fontFamily: "monospace", fontWeight: 700,
+                color: entry.r === "W" ? T.call : T.put,
+                lineHeight: 1,
+              }}>
+                {entry.r}
+              </div>
+            ))}
+          </div>
+
+          {/* Badge Win Rate con tooltip */}
+          {winRate != null && (
+            <div
+              onMouseEnter={() => setWrHov(true)}
+              onMouseLeave={() => setWrHov(false)}
+              style={{ position: "relative", flexShrink: 0 }}
+            >
+              <div style={{
+                fontSize: "8px", fontFamily: "monospace", fontWeight: 700,
+                color: wrColor, padding: "0 3px", lineHeight: "12px",
+                background: `${wrColor}15`,
+                border: `1px solid ${wrColor}55`,
+                cursor: "help",
+              }}>
+                {winRate}%
+              </div>
+
+              {/* Tooltip al hover */}
+              {wrHov && (
+                <div style={{
+                  position: "absolute", bottom: "calc(100% + 4px)", right: 0,
+                  background: "#111", border: `1px solid ${T.border}`,
+                  borderRadius: "4px", padding: "5px 8px",
+                  fontSize: "9px", fontFamily: "monospace", color: T.text,
+                  whiteSpace: "nowrap", zIndex: 100,
+                  boxShadow: "0 4px 12px rgba(0,0,0,.6)",
+                }}>
+                  <div style={{ fontWeight: 700, marginBottom: "3px", color: wrColor }}>
+                    {sym.replace("OTC_", "")} · {winRate}% WR
+                  </div>
+                  <div style={{ color: T.call }}>✅ W: {history.filter(e => e.r === "W").length}</div>
+                  <div style={{ color: T.put  }}>❌ L: {history.filter(e => e.r === "L").length}</div>
+                  <div style={{ color: T.sub, marginTop: "2px" }}>
+                    Total: {history.length} ops
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 });
