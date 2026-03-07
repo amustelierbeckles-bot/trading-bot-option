@@ -8,6 +8,7 @@ import {
   API, API_KEY, T, sc, ALL_PAIRS, PANE_KEY,
   initPanes, normalizeStats, normalizeMarketAsset,
 } from "../utils/dashboardUtils";
+import { onWLUpdate } from "../utils/wlHistory";
 
 export default function useDashboard() {
   // ── Estado ────────────────────────────────────────────────────────────────
@@ -36,6 +37,8 @@ export default function useDashboard() {
   const [sessStart, setSessStart] = useState(() =>
     localStorage.getItem("radar_sess_start") || ""
   );
+  // Incrementa cada vez que se registra un W/L → fuerza re-render de PairCards
+  const [wlVersion, setWlVersion] = useState(0);
 
   // ── Logger ────────────────────────────────────────────────────────────────
   const log = useCallback((m, c = T.muted) => {
@@ -138,6 +141,11 @@ export default function useDashboard() {
     fetchRisk();
   }, [fetchRisk, log]);
 
+  // ── Listener W/L para re-render de PairCards ─────────────────────────────
+  useEffect(() => {
+    return onWLUpdate(() => setWlVersion(v => v + 1));
+  }, []);
+
   // ── Montaje ───────────────────────────────────────────────────────────────
   useEffect(() => {
     log("🚀 RADAR v2.7 arriba", T.call);
@@ -204,6 +212,7 @@ export default function useDashboard() {
     signals, preAlerts, mktData, stats, risk, logs, scanning,
     session, utc5, latMs, latAlert, tradeAct, hovTerm, selSig,
     panes, maeAlert, wrapRef, balance, sessStart,
+    wlVersion,  // ← versión del historial W/L para forzar re-render de PairCards
     // Setters
     setHov, setSelSig, setMaeAlert, setBalance,
     // Acciones

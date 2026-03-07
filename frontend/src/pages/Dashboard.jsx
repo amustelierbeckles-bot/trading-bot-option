@@ -31,6 +31,7 @@ export default function Dashboard() {
     signals, preAlerts, mktData, stats, risk, logs,
     scanning, session, utc5, latMs, latAlert, tradeAct,
     hovTerm, selSig, panes, maeAlert, wrapRef,
+    wlVersion,
     setHov, setSelSig, setMaeAlert,
     scan, refresh, newSession, dragL, dragR,
     sigMap, topSig, pairs,
@@ -97,6 +98,7 @@ export default function Dashboard() {
                   onSelect={s => setSelSig(prev => prev?.symbol === sym ? null : s)}
                   selected={selSig?.symbol === sym}
                   maeAlert={maeAlert}
+                  wlVersion={wlVersion}
                 />
               ))}
             </div>
