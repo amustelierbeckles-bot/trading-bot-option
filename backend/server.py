@@ -114,6 +114,76 @@ def _day_bucket(dt: datetime) -> str:
 
 
 # ============================================================================
+# CIRCUIT BREAKER AUTÓNOMO
+# ============================================================================
+# Estado global del CB. Se actualiza cada vez que se verifica un resultado
+# en _verify_signal_result, sin requerir intervención del usuario.
+#
+# Estructura:
+#   _cb_state["blocked"]        → bool
+#   _cb_state["blocked_until"]  → datetime | None
+#   _cb_state["consecutive_losses"] → int
+#   _cb_state["reason"]         → str
+
+_cb_state: Dict[str, object] = {
+    "blocked":            False,
+    "blocked_until":      None,
+    "consecutive_losses": 0,
+    "reason":             "",
+}
+
+CB_CONSECUTIVE_LIMIT = 3
+CB_COOLDOWN_MINUTES  = 60
+
+
+def _cb_is_blocked() -> bool:
+    """
+    Retorna True si el Circuit Breaker está activo y el cooldown no expiró.
+    Si el cooldown ya pasó, resetea el estado automáticamente.
+    """
+    if not _cb_state["blocked"]:
+        return False
+    until = _cb_state.get("blocked_until")
+    if until and datetime.utcnow() >= until:
+        # Cooldown expirado → reset automático
+        _cb_state.update({"blocked": False, "blocked_until": None,
+                           "consecutive_losses": 0, "reason": ""})
+        logger.info("✅ Circuit Breaker: cooldown expirado — bot reanudado")
+        return False
+    return True
+
+
+def _cb_record_result(outcome: str, symbol: str) -> None:
+    """
+    Actualiza el contador de pérdidas consecutivas del CB.
+    Llamado desde _verify_signal_result después de cada verificación.
+
+    - "win"  → resetea el contador (racha rota)
+    - "loss" → incrementa; si llega a CB_CONSECUTIVE_LIMIT dispara el bloqueo
+    """
+    if _cb_state["blocked"]:
+        return  # ya bloqueado, no re-disparar
+
+    if outcome == "win":
+        _cb_state["consecutive_losses"] = 0
+    elif outcome == "loss":
+        _cb_state["consecutive_losses"] = int(_cb_state["consecutive_losses"]) + 1
+        n = _cb_state["consecutive_losses"]
+        logger.warning("⚠️  CB: %d pérdida(s) consecutiva(s) | %s", n, symbol)
+
+        if n >= CB_CONSECUTIVE_LIMIT:
+            until = datetime.utcnow() + timedelta(minutes=CB_COOLDOWN_MINUTES)
+            _cb_state.update({
+                "blocked":       True,
+                "blocked_until": until,
+                "reason":        (f"🛑 {n} pérdidas consecutivas — "
+                                  f"bot pausado hasta {until.strftime('%H:%M')} UTC"),
+            })
+            logger.warning("🛑 CIRCUIT BREAKER ACTIVADO | %s | cooldown hasta %s UTC",
+                           symbol, until.strftime("%H:%M"))
+
+
+# ============================================================================
 # MODELS
 # ============================================================================
 
@@ -837,13 +907,21 @@ def _quality_score(signal: dict, symbol: str = None,
 
 def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
     """
-    Ventanas horarias personalizadas en UTC-5 — 20 pares completos.
+    Detecta la sesión de mercado activa y sus características.
 
-    Ventana 1 — Mañana:    09:30 – 12:00 UTC-5  (14:30 – 17:00 UTC)
-    Ventana 2 — Madrugada: 00:00 – 02:00 UTC-5  (05:00 – 07:00 UTC)
+    Sesiones en UTC (alineadas con etiquetas de /v1/stats):
+      london   08:00–16:00 UTC  → alta volatilidad EUR/GBP, ideal RangeBreakout
+      newyork  13:00–21:00 UTC  → solapamiento NY+Londres 13–16h, tendencias fuertes
+      asia     00:00–08:00 UTC  → baja volatilidad, lateralización, JPY/AUD
+      off      No hay sesión dominante activa
 
-    Créditos estimados: ~540 req/día (bien por debajo del límite de 800).
-    Fuera de estas ventanas: bot PAUSADO, 0 créditos consumidos.
+    En OTC las sesiones son aproximadas pero sirven para calibrar umbrales.
+    El bot opera en TODAS las sesiones activas; fuera de horario pausamos para
+    ahorrar créditos de API.
+
+    Ventanas de operación definidas por el usuario (UTC-5):
+      Mañana:    09:30–12:00 UTC-5 → 14:30–17:00 UTC → london+newyork
+      Madrugada: 00:00–02:00 UTC-5 → 05:00–07:00 UTC → london temprano
     """
     # UTC → UTC-5 en minutos totales
     utc5_total = (utc_hour * 60 + utc_minute) - 300
@@ -853,12 +931,22 @@ def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
     utc5_min  = utc5_total % 60
     t = utc5_total
 
-    MORNING_START = 9 * 60 + 30   # 570
-    MORNING_END   = 12 * 60        # 720
-    NIGHT_START   = 0              # 0
-    NIGHT_END     = 2 * 60         # 120
+    MORNING_START = 9 * 60 + 30    # 570 min UTC-5 → 14:30 UTC
+    MORNING_END   = 12 * 60         # 720 min UTC-5 → 17:00 UTC
+    NIGHT_START   = 0               #   0 min UTC-5 → 05:00 UTC
+    NIGHT_END     = 2 * 60          # 120 min UTC-5 → 07:00 UTC
 
-    # Los 20 pares OTC completos
+    # Determina sesión UTC real para etiquetas consistentes con /v1/stats
+    utc_t = utc_hour * 60 + utc_minute
+    if 480 <= utc_t < 780:          # 08:00–13:00 UTC
+        session_type = "london"
+    elif 780 <= utc_t < 1260:       # 13:00–21:00 UTC (solapamiento incluido)
+        session_type = "newyork"
+    elif utc_t < 480 or utc_t >= 1260:
+        session_type = "asia"
+    else:
+        session_type = "off"
+
     ALL_20_PAIRS = [
         "OTC_EURUSD", "OTC_GBPUSD", "OTC_USDJPY", "OTC_USDCHF",
         "OTC_AUDUSD", "OTC_NZDUSD", "OTC_USDCAD", "OTC_EURJPY",
@@ -867,27 +955,27 @@ def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
         "OTC_AUDJPY", "OTC_AUDCAD", "OTC_CADJPY", "OTC_CHFJPY",
     ]
 
-    # Ventana mañana 09:30–12:00 UTC-5
-    # Coincide con Londres+NY — máxima liquidez en EUR/GBP/USD
+    # Ventana mañana 09:30–12:00 UTC-5 → coincide con Londres+NY
     if MORNING_START <= t < MORNING_END:
         return {
-            "name":          "Mañana (09:30–12:00)",
+            "name":          session_type,          # "london" o "newyork"
+            "display":       "Mañana (09:30–12:00)",
             "active":        True,
             "quality_boost": 0.06,
             "pairs":         ALL_20_PAIRS,
-            "description":   "Ventana mañana — Londres+NY, 20 pares activos",
+            "description":   f"Ventana mañana — {session_type} activa, 20 pares",
             "utc5_display":  f"{utc5_hour:02d}:{utc5_min:02d} UTC-5",
         }
 
-    # Ventana madrugada 00:00–02:00 UTC-5
-    # Coincide con sesión Asiática — JPY/AUD más activos
+    # Ventana madrugada 00:00–02:00 UTC-5 → coincide con Londres temprano/Asia
     if NIGHT_START <= t < NIGHT_END:
         return {
-            "name":          "Madrugada (00:00–02:00)",
+            "name":          session_type,          # "london" o "asia"
+            "display":       "Madrugada (00:00–02:00)",
             "active":        True,
             "quality_boost": 0.03,
             "pairs":         ALL_20_PAIRS,
-            "description":   "Ventana madrugada — sesión Asiática, 20 pares activos",
+            "description":   f"Ventana madrugada — {session_type} activa, 20 pares",
             "utc5_display":  f"{utc5_hour:02d}:{utc5_min:02d} UTC-5",
         }
 
@@ -900,7 +988,8 @@ def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
         mins_next, next_w = (1440 - t), "00:00 (madrugada)"
 
     return {
-        "name":          "Fuera de ventana",
+        "name":          "off",
+        "display":       "Fuera de ventana",
         "active":        False,
         "quality_boost": 0.0,
         "pairs":         [],
@@ -908,7 +997,7 @@ def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
             f"Bot pausado — próxima ventana: {next_w} UTC-5 "
             f"(en ~{mins_next} min) · 0 créditos consumidos"
         ),
-        "utc5_display": f"{utc5_hour:02d}:{utc5_min:02d} UTC-5",
+        "utc5_display":  f"{utc5_hour:02d}:{utc5_min:02d} UTC-5",
     }
 
 
@@ -1018,7 +1107,7 @@ async def _auto_scan_loop(app: "FastAPI"):
 
             if not session["active"]:
                 logger.info("🌙 [%s] %s — sin escaneo. Próximo ciclo en %ds.",
-                            session["name"], session["description"], INTERVAL)
+                            session["display"], session["description"], INTERVAL)
                 await asyncio.sleep(INTERVAL)
                 continue
 
@@ -1043,7 +1132,7 @@ async def _auto_scan_loop(app: "FastAPI"):
             calibration_tag = "CALIBRADO" if _dynamic_min_quality != MIN_QUALITY_BASE else "DEFAULT"
             logger.info(
                 "⚡ Sesión: %s | %d/%d pares (cooldown) | Umbral: %.2f [%s] | gather() START",
-                session["name"], len(pairs_to_scan), len(QUALITY_PAIRS),
+                session["display"], len(pairs_to_scan), len(QUALITY_PAIRS),
                 MIN_QUALITY, calibration_tag,
             )
 
@@ -1118,7 +1207,7 @@ async def _auto_scan_loop(app: "FastAPI"):
 
                 # Filtro ATR
                 if ind.is_real and ind.atr_pct > 0:
-                    atr_threshold = 0.015 if session["name"] in ("Londres", "Londres+NY") else 0.010
+                    atr_threshold = 0.015 if session["name"] in ("london", "newyork") else 0.010
                     if ind.atr_pct < atr_threshold:
                         logger.debug("⏭  %s omitido — ATR%% %.4f < %.4f (mercado plano)",
                                      symbol, ind.atr_pct, atr_threshold)
@@ -1157,7 +1246,27 @@ async def _auto_scan_loop(app: "FastAPI"):
                     continue
 
                 score = _quality_score(signal, symbol, ind)
-                if score < MIN_QUALITY:
+
+                # ── Signal Calibration by Pair ─────────────────────────────────
+                # Si el par tiene Win Rate < 50% (degraded) en el último período,
+                # elevamos el umbral mínimo en +0.10 para ese par específico.
+                # Usa el caché de Redis — 0 queries adicionales a MongoDB.
+                pair_min_quality = MIN_QUALITY
+                try:
+                    redis = getattr(app.state, "redis", None)
+                    cached_stats = await _wr_cache_get(redis, "wr:stats:1h")
+                    if cached_stats:
+                        pair_data = cached_stats.get("by_pair", {}).get(symbol, {})
+                        if pair_data.get("degraded", False):
+                            pair_min_quality = MIN_QUALITY + 0.10
+                            logger.debug(
+                                "📉 %s degradado (WR=%.0f%%) → umbral elevado a %.2f",
+                                symbol, pair_data.get("win_rate", 0), pair_min_quality
+                            )
+                except Exception:
+                    pass
+
+                if score < pair_min_quality:
                     continue
 
                 candidates.append((score, symbol, signal, ind))
@@ -1246,11 +1355,18 @@ async def _auto_scan_loop(app: "FastAPI"):
                     cycle_elapsed,
                 )
 
-                # Telegram + auditoría autónoma
-                only_fire = os.getenv("TELEGRAM_ONLY_FIRE", "false").lower() == "true"
-                is_fire   = score >= 0.75 or len(signal.get("strategies_agreeing", [])) >= 3
-                if not only_fire or is_fire:
-                    asyncio.create_task(_send_signal_telegram(doc, app))
+                # ── Circuit Breaker: bloquea Telegram durante cooldown ─────────
+                if _cb_is_blocked():
+                    logger.warning(
+                        "🛑 CB activo — señal %s %s bloqueada (Telegram silenciado) | %s",
+                        signal["type"], symbol, _cb_state.get("reason", "")
+                    )
+                else:
+                    # Telegram + auditoría autónoma
+                    only_fire = os.getenv("TELEGRAM_ONLY_FIRE", "false").lower() == "true"
+                    is_fire   = score >= 0.75 or len(signal.get("strategies_agreeing", [])) >= 3
+                    if not only_fire or is_fire:
+                        asyncio.create_task(_send_signal_telegram(doc, app))
 
             if not top:
                 logger.info("🔍 Ciclo sin señales (umbral %.2f) | scan=%.1fs",
@@ -1453,9 +1569,18 @@ async def health_check():
         "status":             "healthy",
         "timestamp":          now.isoformat(),
         "strategies_loaded":  len(app.state.strategies),
-        "market_session":     session["name"],
+        "market_session":     session["display"],
         "session_active":     session["active"],
         "session_description": session["description"],
+        "circuit_breaker": {
+            "blocked":            _cb_state["blocked"],
+            "consecutive_losses": _cb_state["consecutive_losses"],
+            "reason":             _cb_state.get("reason", ""),
+            "blocked_until":      (
+                _cb_state["blocked_until"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                if _cb_state.get("blocked_until") else None
+            ),
+        },
         "session_pairs":      len(session["pairs"]),
     }
 
@@ -3101,19 +3226,26 @@ async def get_stats(request: Request, window: str = "1h"):
 @app.post("/api/risk/reset-circuit-breaker")
 async def reset_circuit_breaker(request: Request):
     """
-    Resetea el Circuit Breaker manualmente.
-    Marca el inicio de una nueva sesión desde ahora,
-    ignorando todas las pérdidas anteriores.
+    Resetea el Circuit Breaker manualmente (autónomo + legacy).
+    Desbloquea el bot inmediatamente, resetea pérdidas consecutivas.
     """
     now = datetime.utcnow()
-    # Guarda el timestamp de reset en app.state
+    # Reset del CB autónomo (nuevo)
+    _cb_state.update({
+        "blocked":            False,
+        "blocked_until":      None,
+        "consecutive_losses": 0,
+        "reason":             "",
+    })
+    # Reset legacy (compatibilidad con session-stats)
     request.app.state.circuit_breaker_reset_at = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
     logger.info("🔓 Circuit Breaker reseteado manualmente — nueva sesión desde %s", now)
     return {
-        "success":    True,
-        "reset_at":   request.app.state.circuit_breaker_reset_at,
-        "message":    "✅ Circuit Breaker reseteado. Nueva sesión iniciada — historial anterior ignorado.",
+        "success":         True,
+        "reset_at":        request.app.state.circuit_breaker_reset_at,
+        "circuit_breaker": _cb_state,
+        "message":         "✅ Circuit Breaker reseteado. Bot reanudado.",
     }
 
 
@@ -3638,13 +3770,16 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
         )
 
         # Invalida el caché de Win Rate para este par y global
-        # → la próxima consulta recalculará con el resultado fresco
         try:
             redis = getattr(app.state, "redis", None)
             await _wr_cache_invalidate(redis, f"wr:{symbol}")
             await _wr_cache_invalidate(redis, "wr:global")
+            await _wr_cache_invalidate(redis, "wr:stats")  # invalida /v1/stats
         except Exception:
             pass
+
+        # Actualiza el Circuit Breaker autónomo
+        _cb_record_result(outcome, symbol)
 
         return outcome
 
