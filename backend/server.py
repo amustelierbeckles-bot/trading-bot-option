@@ -3558,16 +3558,35 @@ async def get_notifications_config():
 # TELEGRAM INTERACTIVE — Auditoría Estadística Automatizada
 # ============================================================================
 
-# UTC-5 offset (Perú / Colombia / Ecuador / Cuba)
-UTC_OFFSET = timedelta(hours=-5)
+# Offset local — Cuba/Eastern DST: UTC-4 (mar–nov) · UTC-5 (nov–mar)
+# Se ajusta automáticamente según el mes actual.
+def _get_local_offset() -> timedelta:
+    """Devuelve el offset correcto según DST de Cuba/Eastern."""
+    import time as _time
+    # Si el sistema operativo del VPS está en UTC, calculamos DST manualmente.
+    # Cuba DST: segundo domingo de marzo al último domingo de octubre.
+    now_utc = datetime.utcnow()
+    year    = now_utc.year
+    # Segundo domingo de marzo
+    dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
+    # Primer domingo de noviembre
+    dst_end   = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
+    if dst_start <= now_utc < dst_end:
+        return timedelta(hours=-4)   # Horario de verano
+    return timedelta(hours=-5)       # Horario estándar
+
+UTC_OFFSET = _get_local_offset()
 
 def _local_time(dt: datetime = None) -> datetime:
-    """Convierte UTC a UTC-5 para display."""
-    return (dt or datetime.utcnow()) + UTC_OFFSET
+    """Convierte UTC al horario local (DST-aware)."""
+    offset = _get_local_offset()
+    return (dt or datetime.utcnow()) + offset
 
 def _fmt_time(dt: datetime = None) -> str:
-    """Formatea hora en UTC-5 para mensajes de Telegram."""
-    return _local_time(dt).strftime("%H:%M:%S") + " (UTC-5)"
+    """Formatea hora local para mensajes de Telegram."""
+    offset = _get_local_offset()
+    label  = "UTC-4" if offset.total_seconds() == -4 * 3600 else "UTC-5"
+    return _local_time(dt).strftime("%H:%M:%S") + f" ({label})"
 
 # Estado en memoria de auditorías activas
 # { msg_id_str: { signal, chat_id, entry_time, audit_id } }

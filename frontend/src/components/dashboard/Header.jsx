@@ -56,7 +56,7 @@ export const Header = memo(({ session, utc5, latMs, latAlert, onScan, scanning, 
       </div>
     )}
 
-    <span style={{ fontSize: "10px", color: T.muted, fontFamily: "monospace" }}>· UTC-5 {utc5}</span>
+    <span style={{ fontSize: "10px", color: T.muted, fontFamily: "monospace" }}>· Local {utc5}</span>
 
     {latAlert && (
       <span style={{ fontSize: "10px", color: T.violet, fontFamily: "monospace", animation: "blink .6s step-end infinite" }}>

@@ -47,13 +47,19 @@ export default function useDashboard() {
     setLogs(p => [...p.slice(-120), { m, c, t }]);
   }, []);
 
-  // ── Reloj UTC-5 ───────────────────────────────────────────────────────────
+  // ── Reloj local (timezone-aware — ajuste automático DST) ─────────────────
   useEffect(() => {
     const tick = () => {
       const now = new Date();
-      const ms5 = now.getTime() + now.getTimezoneOffset() * 60000 - 5 * 3600000;
-      const d5  = new Date(ms5);
-      setUtc5(`${String(d5.getHours()).padStart(2,"0")}:${String(d5.getMinutes()).padStart(2,"0")}:${String(d5.getSeconds()).padStart(2,"0")}`);
+      // Usa la API Intl para obtener la hora local correcta con DST automático
+      const timeStr = now.toLocaleTimeString("en-US", {
+        timeZone: "America/Havana",
+        hour12:   false,
+        hour:     "2-digit",
+        minute:   "2-digit",
+        second:   "2-digit",
+      });
+      setUtc5(timeStr);
     };
     tick();
     const id = setInterval(tick, 1000);
