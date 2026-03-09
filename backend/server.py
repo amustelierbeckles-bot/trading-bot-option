@@ -1045,18 +1045,23 @@ async def _auto_scan_loop(app: "FastAPI"):
             now       = cycle_start
 
             # ── Auto-calibración cada 10 ciclos (~20 min) ────────────────────
+            # Solo usa trades con audit_confidence='high' para evitar que datos
+            # corruptos de auditorías fallidas envenenen el umbral dinámico.
             _calibration_cycle += 1
             if _calibration_cycle % 10 == 0:
                 try:
                     if use_mongo:
-                        cursor     = db.trades.find()
+                        cursor     = db.trades.find({"audit_confidence": "high"})
                         all_trades = await cursor.to_list(2000)
                         for t in all_trades:
                             t["id"] = str(t.pop("_id", ""))
                             if isinstance(t.get("created_at"), datetime):
                                 t["created_at"] = t["created_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                     else:
-                        all_trades = list(app.state.trades_store)
+                        all_trades = [
+                            t for t in app.state.trades_store
+                            if t.get("audit_confidence") == "high"
+                        ]
 
                     if len(all_trades) >= _MIN_TRADES_TO_CALIBRATE:
                         cal = _compute_optimal_threshold(all_trades)
@@ -1065,20 +1070,30 @@ async def _auto_scan_loop(app: "FastAPI"):
                             _dynamic_min_quality = max(0.45, min(0.85, cal["optimal_threshold"]))
                             logger.info("🎯 Auto-calibración | Umbral → %.2f | %s",
                                         _dynamic_min_quality, cal["recommendation"])
+                    else:
+                        logger.info(
+                            "📊 Auto-calibración | Solo %d trades de alta confianza "
+                            "(mínimo %d) — usando umbral base %.2f",
+                            len(all_trades), _MIN_TRADES_TO_CALIBRATE, _dynamic_min_quality,
+                        )
                 except Exception as cal_err:
                     logger.warning("⚠️  Error en auto-calibración: %s", cal_err)
 
             # ── Umbral efectivo (calibración global + ajuste por hora) ────────
+            # Solo considera trades de alta confianza para el ajuste horario.
             effective_base = _dynamic_min_quality
             try:
                 if use_mongo:
-                    cursor_h = db.trades.find()
+                    cursor_h = db.trades.find({"audit_confidence": "high"})
                     all_t_h  = await cursor_h.to_list(1000)
                     for t in all_t_h:
                         if isinstance(t.get("created_at"), datetime):
                             t["created_at"] = t["created_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                 else:
-                    all_t_h = list(app.state.trades_store)
+                    all_t_h = [
+                        t for t in app.state.trades_store
+                        if t.get("audit_confidence") == "high"
+                    ]
 
                 hour_trades = [
                     t for t in all_t_h
@@ -2186,7 +2201,7 @@ async def delete_all_trades(request: Request):
 # ── Umbral dinámico global (calibrado con historial real) ─────────────────────
 # Se actualiza en cada ciclo si hay suficientes trades registrados.
 _dynamic_min_quality: float = 0.55   # valor por defecto (sin calibración)
-_MIN_TRADES_TO_CALIBRATE: int = 15   # mínimo de trades para confiar en el WR
+_MIN_TRADES_TO_CALIBRATE: int = 20   # mínimo de trades HIGH-CONFIDENCE para calibrar
 
 
 def _compute_optimal_threshold(trades: list) -> dict:
@@ -2355,16 +2370,21 @@ async def get_calibration(request: Request):
     """
     global _dynamic_min_quality
 
-    # Obtiene todos los trades registrados
+    # Solo usa trades de alta confianza para la calibración
     if request.app.state.use_mongo:
-        cursor = request.app.state.db.trades.find().sort("created_at", -1)
+        cursor = request.app.state.db.trades.find(
+            {"audit_confidence": "high"}
+        ).sort("created_at", -1)
         trades = await cursor.to_list(2000)
         for t in trades:
             t["id"] = str(t.pop("_id"))
             if isinstance(t.get("created_at"), datetime):
                 t["created_at"] = t["created_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
     else:
-        trades = list(request.app.state.trades_store)
+        trades = [
+            t for t in request.app.state.trades_store
+            if t.get("audit_confidence") == "high"
+        ]
 
     if len(trades) < _MIN_TRADES_TO_CALIBRATE:
         return {
