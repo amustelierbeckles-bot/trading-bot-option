@@ -6,19 +6,37 @@ export const SIGNAL_DURATION_SECONDS = 120;
 export const EXPIRY_MINUTES          = 2;
 export const BACKEND_URL             = process.env.REACT_APP_BACKEND_URL;
 
-// ── Mapa de activos → ID de Pocket Option ────────────────────────────────────
+// ── Mapa de activos → ID exacto de Pocket Option (formato: XXXYYY_otc) ───────
+// PocketOption usa guión bajo + minúscula "otc" en el hash de la URL.
 export const ASSET_MAP = {
-  OTC_EURUSD: "EURUSD-OTC", OTC_GBPUSD: "GBPUSD-OTC",
-  OTC_USDJPY: "USDJPY-OTC", OTC_USDCHF: "USDCHF-OTC",
-  OTC_AUDUSD: "AUDUSD-OTC", OTC_USDCAD: "USDCAD-OTC",
-  OTC_NZDUSD: "NZDUSD-OTC", OTC_EURJPY: "EURJPY-OTC",
-  OTC_EURGBP: "EURGBP-OTC", OTC_EURAUD: "EURAUD-OTC",
-  OTC_EURCAD: "EURCAD-OTC", OTC_EURCHF: "EURCHF-OTC",
-  OTC_GBPJPY: "GBPJPY-OTC", OTC_GBPAUD: "GBPAUD-OTC",
-  OTC_GBPCAD: "GBPCAD-OTC", OTC_GBPCHF: "GBPCHF-OTC",
-  OTC_AUDJPY: "AUDJPY-OTC", OTC_AUDCAD: "AUDCAD-OTC",
-  OTC_CADJPY: "CADJPY-OTC", OTC_CHFJPY: "CHFJPY-OTC",
+  OTC_EURUSD: "EURUSD_otc", OTC_GBPUSD: "GBPUSD_otc",
+  OTC_USDJPY: "USDJPY_otc", OTC_USDCHF: "USDCHF_otc",
+  OTC_AUDUSD: "AUDUSD_otc", OTC_USDCAD: "USDCAD_otc",
+  OTC_NZDUSD: "NZDUSD_otc", OTC_EURJPY: "EURJPY_otc",
+  OTC_EURGBP: "EURGBP_otc", OTC_EURAUD: "EURAUD_otc",
+  OTC_EURCAD: "EURCAD_otc", OTC_EURCHF: "EURCHF_otc",
+  OTC_GBPJPY: "GBPJPY_otc", OTC_GBPAUD: "GBPAUD_otc",
+  OTC_GBPCAD: "GBPCAD_otc", OTC_GBPCHF: "GBPCHF_otc",
+  OTC_AUDJPY: "AUDJPY_otc", OTC_AUDCAD: "AUDCAD_otc",
+  OTC_CADJPY: "CADJPY_otc", OTC_CHFJPY: "CHFJPY_otc",
 };
+
+// ── Preferencia demo/real (persiste en localStorage) ─────────────────────────
+export const PO_MODE_KEY = "po_trading_mode"; // "demo" | "real"
+
+export function getPOMode() {
+  return localStorage.getItem(PO_MODE_KEY) || "real";
+}
+
+export function setPOMode(mode) {
+  localStorage.setItem(PO_MODE_KEY, mode === "demo" ? "demo" : "real");
+}
+
+export function getPOBaseUrl() {
+  return getPOMode() === "demo"
+    ? "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
+    : "https://pocketoption.com/en/cabinet/quick-high-low/";
+}
 
 export const EXPIRY_MAP = { "1m": 60, "2m": 120, "3m": 180, "5m": 300 };
 
@@ -51,12 +69,14 @@ export const formatTimestampUTC5 = (raw) => {
   return `Generada: ${utc5.toISOString().slice(11, 19)} (UTC-5)`;
 };
 
-// ── Abre Pocket Option en nueva pestaña ──────────────────────────────────────
+// ── Abre Pocket Option en nueva pestaña con el par pre-seleccionado ──────────
 export async function openPocketOption(assetName, symbol) {
-  const rawAsset  = ASSET_MAP[symbol] ?? symbol.replace("OTC_", "") + "-OTC";
-  const safeAsset = rawAsset.replace(/[^A-Z0-9\-]/gi, "").toUpperCase();
-  const url       = `https://pocketoption.com/en/cabinet/demo-quick-high-low/#${safeAsset}`;
+  const assetId = ASSET_MAP[symbol] ?? (symbol.replace("OTC_", "").toLowerCase() + "_otc");
+  const baseUrl = getPOBaseUrl();
+  const url     = `${baseUrl}#${assetId}`;
+  const mode    = getPOMode();
   try { await navigator.clipboard.writeText(assetName); } catch (_) {}
   const newTab = window.open(url, "_blank", "noopener,noreferrer");
   if (newTab) newTab.opener = null;
+  return { url, mode, assetId };
 }

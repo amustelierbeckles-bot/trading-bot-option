@@ -14,29 +14,19 @@ import {
   isSignalLive,
 } from "../utils/signalTime";
 import { getSignalPriority } from "../hooks/useSignalNotifier";
+import {
+  openPocketOption as openPO,
+  getPOMode,
+  setPOMode,
+} from "../utils/signalCardUtils";
 
 const EXPIRY_MINUTES = 2;
 
-const ASSET_MAP = {
-  OTC_EURUSD:"EURUSD-OTC", OTC_GBPUSD:"GBPUSD-OTC", OTC_USDJPY:"USDJPY-OTC",
-  OTC_USDCHF:"USDCHF-OTC", OTC_AUDUSD:"AUDUSD-OTC", OTC_USDCAD:"USDCAD-OTC",
-  OTC_NZDUSD:"NZDUSD-OTC", OTC_EURJPY:"EURJPY-OTC", OTC_EURGBP:"EURGBP-OTC",
-  OTC_EURAUD:"EURAUD-OTC", OTC_EURCAD:"EURCAD-OTC", OTC_EURCHF:"EURCHF-OTC",
-  OTC_GBPJPY:"GBPJPY-OTC", OTC_GBPAUD:"GBPAUD-OTC", OTC_GBPCAD:"GBPCAD-OTC",
-  OTC_GBPCHF:"GBPCHF-OTC", OTC_AUDJPY:"AUDJPY-OTC", OTC_AUDCAD:"AUDCAD-OTC",
-  OTC_CADJPY:"CADJPY-OTC", OTC_CHFJPY:"CHFJPY-OTC",
-};
-
 async function openPocketOption(signal) {
-  const raw  = ASSET_MAP[signal.symbol] ?? signal.symbol.replace("OTC_", "") + "-OTC";
-  const safe = raw.replace(/[^A-Z0-9\-]/gi, "").toUpperCase();
-  const url  = `https://pocketoption.com/en/cabinet/demo-quick-high-low/#${safe}`;
-  try { await navigator.clipboard.writeText(signal.asset_name); } catch (_) {}
-  const tab = window.open(url, "_blank", "noopener,noreferrer");
-  if (tab) tab.opener = null;
+  const { mode } = await openPO(signal.asset_name, signal.symbol);
   toast.success(
-    `"${signal.asset_name}" copiado — Pega en PO · expiración: ${EXPIRY_MINUTES} min`,
-    { duration: 8000 }
+    `✅ ${signal.asset_name} abierto en PO (${mode === "real" ? "REAL" : "DEMO"}) · ${EXPIRY_MINUTES} min`,
+    { duration: 6000 }
   );
 }
 
@@ -54,6 +44,7 @@ export default function ActiveSignalBanner({
   const [secsLeft,  setSecsLeft]  = useState(activeSignal ? getSecondsLeft(activeSignal.timestamp) : 0);
   const [dismissed, setDismissed] = useState(false);
   const [prevId,    setPrevId]    = useState(null);
+  const [poMode,    setPoMode]    = useState(() => getPOMode());
 
   // Reset dismissed cuando llega señal nueva
   useEffect(() => {
@@ -196,6 +187,29 @@ export default function ActiveSignalBanner({
           </div>
         )}
 
+        {/* Toggle Demo / Real */}
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] text-white/40 font-mono">Cuenta:</span>
+          <div className="flex rounded-md overflow-hidden border border-white/10 text-[10px] font-mono font-bold">
+            <button
+              onClick={() => { setPOMode("demo"); setPoMode("demo"); }}
+              className="px-2 py-0.5 transition-colors"
+              style={{
+                background: poMode === "demo" ? "#FACC15" : "transparent",
+                color:      poMode === "demo" ? "#000"    : "#888",
+              }}
+            >DEMO</button>
+            <button
+              onClick={() => { setPOMode("real"); setPoMode("real"); }}
+              className="px-2 py-0.5 transition-colors"
+              style={{
+                background: poMode === "real" ? "#00FF94" : "transparent",
+                color:      poMode === "real" ? "#000"    : "#888",
+              }}
+            >REAL</button>
+          </div>
+        </div>
+
         {/* Botón "Abrir PO" — bloqueado si circuit breaker activo */}
         {isBlocked ? (
           <div className="w-full py-2.5 rounded-lg bg-red-950/80 border border-red-700 text-center">
@@ -220,13 +234,13 @@ export default function ActiveSignalBanner({
             }}
           >
             <ExternalLink className="w-4 h-4" />
-            {isFire ? "🔥 " : isDegraded ? "⚠️ " : ""}Abrir PO — {activeSignal.asset_name}
-            <Copy className="w-3.5 h-3.5 opacity-60" />
+            {isFire ? "🔥 " : isDegraded ? "⚠️ " : ""}
+            Abrir {poMode === "real" ? "🟢 REAL" : "🟡 DEMO"} — {activeSignal.asset_name}
           </button>
         )}
 
         <p className="text-[10px] text-white/30 font-mono text-center">
-          El nombre del par se copia automáticamente
+          Un clic → PO abre con el par preseleccionado
         </p>
       </div>
     </div>
