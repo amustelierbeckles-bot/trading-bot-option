@@ -380,28 +380,42 @@ class RangeBreakoutStrategy(TradingStrategy):
 
 class CCIAlligatorStrategy(TradingStrategy):
     """
-    CCI extremo como señal de REVERSIÓN + confirmación con EMA opuesta.
-    En mercados OTC el CCI extremo indica sobreextensión y rebote inminente.
+    CCI extremo — dos modos según intensidad:
 
-    REAL:  CCI > 100 + trend bearish (sobrecomprado, va a bajar) → PUT
-           CCI < -100 + trend bullish (sobrevendido, va a subir)  → CALL
+    REVERSIÓN (CCI 100–149):
+      CCI > 100 + trend bearish/neutral → PUT   (sobrecomprado girando)
+      CCI < -100 + trend bullish/neutral → CALL (sobrevendido girando)
 
-    Lógica: el precio está sobreextendido respecto a su media.
-    El Alligator (EMA) empieza a girar en contra → confirmación de reversión.
+    MOMENTUM EXTREMO (|CCI| ≥ 150):
+      CCI ≥ 150 + trend bullish → CALL  (impulso violento en dirección alcista)
+      CCI ≤ -150 + trend bearish → PUT  (impulso violento en dirección bajista)
+
+    En OTC de 2 min, CCI ≥ 150 alineado con la tendencia indica que el impulso
+    tiene suficiente fuerza para continuar al menos una vela más.
     """
     def __init__(self):
         super().__init__("CCI + Alligator", 1.2)
-    
+
     def generate_signal(self, ind: Optional[IndicatorSet] = None) -> Optional[Dict]:
         if ind and ind.is_real:
             cci   = ind.cci
             trend = ind.trend
-            # CCI sobrecomprado + tendencia girando a la baja → PUT (reversión bajista)
+
+            # Modo MOMENTUM EXTREMO — |CCI| ≥ 150 alineado con tendencia
+            if cci >= 150 and trend == "bullish":
+                conf = round(min(0.62 + abs(cci) / 1000, 0.82), 2)
+                return {"type": "CALL", "confidence": conf, "cci": round(cci, 1),
+                        "reason": f"CCI momentum extremo ({cci:.1f}) + tendencia alcista → continuación"}
+            if cci <= -150 and trend == "bearish":
+                conf = round(min(0.62 + abs(cci) / 1000, 0.82), 2)
+                return {"type": "PUT",  "confidence": conf, "cci": round(cci, 1),
+                        "reason": f"CCI momentum extremo ({cci:.1f}) + tendencia bajista → continuación"}
+
+            # Modo REVERSIÓN — CCI 100–149 contra la tendencia
             if cci > 100 and trend in ("bearish", "neutral"):
                 conf = round(min(0.60 + abs(cci) / 800, 0.80), 2)
                 return {"type": "PUT",  "confidence": conf, "cci": round(cci, 1),
                         "reason": f"CCI sobrecomprado ({cci:.1f}) → reversión bajista OTC"}
-            # CCI sobrevendido + tendencia girando al alza → CALL (reversión alcista)
             if cci < -100 and trend in ("bullish", "neutral"):
                 conf = round(min(0.60 + abs(cci) / 800, 0.80), 2)
                 return {"type": "CALL", "confidence": conf, "cci": round(cci, 1),
@@ -465,20 +479,36 @@ class RSIBollingerStrategy(TradingStrategy):
 class MACDStochasticStrategy(TradingStrategy):
     """
     Estocástico extremo + histograma MACD para confirmar impulso real.
-    REAL:  Stoch < 20 + histogram > 0 → CALL (impulso alcista confirmado)
-           Stoch > 80 + histogram < 0 → PUT  (impulso bajista confirmado)
 
-    Usa el histograma (macd_line - signal_line) en vez de solo macd_line
-    para detectar el momento en que el impulso realmente cambia de dirección.
+    Modo MOMENTUM (histograma ALINEADO con Stoch):
+      Stoch < 20 + histogram > 0 → CALL (impulso alcista confirmado)
+      Stoch > 80 + histogram < 0 → PUT  (impulso bajista confirmado)
+
+    Modo MOMENTUM EXTREMO (Stoch en límite absoluto ≥ 95 / ≤ 5):
+      Stoch ≥ 95 + histogram > 0 → CALL (impulso alcista máximo)
+      Stoch ≤ 5  + histogram < 0 → PUT  (impulso bajista máximo)
+
+    Usa el histograma (macd_line - signal_line) en vez de solo macd_line.
     """
     def __init__(self):
         super().__init__("MACD + Stochastic", 1.0)
-    
+
     def generate_signal(self, ind: Optional[IndicatorSet] = None) -> Optional[Dict]:
         if ind and ind.is_real:
-            stoch    = ind.stoch_k
-            # Usa macd_hist si existe, si no cae back a macd_line
+            stoch     = ind.stoch_k
             histogram = getattr(ind, "macd_hist", ind.macd_line)
+
+            # Momentum extremo: Stoch en límite absoluto + MACD confirma dirección
+            if stoch >= 95 and histogram > 0:
+                conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
+                return {"type": "CALL", "confidence": conf, "cci": round(ind.cci, 1),
+                        "reason": f"Stoch {stoch:.1f} extremo alcista + MACD histograma positivo"}
+            if stoch <= 5 and histogram < 0:
+                conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
+                return {"type": "PUT",  "confidence": conf, "cci": round(ind.cci, 1),
+                        "reason": f"Stoch {stoch:.1f} extremo bajista + MACD histograma negativo"}
+
+            # Modo estándar: sobrevendido/sobrecomprado con histograma confirmando reversión
             if stoch < 20 and histogram > 0:
                 conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
                 return {"type": "CALL", "confidence": conf, "cci": round(ind.cci, 1),
