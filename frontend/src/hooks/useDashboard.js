@@ -157,8 +157,8 @@ export default function useDashboard() {
     log("🚀 RADAR v2.7 arriba", T.call);
     log("Ventanas: 09:30–12:00 · 00:00–02:00 UTC-5", T.muted);
     fetchSig(); fetchPre(); fetchStats(); fetchRisk(); fetchMkt();
-    const i1 = setInterval(fetchSig,   30000);
-    const i2 = setInterval(fetchPre,   20000);
+    const i1 = setInterval(fetchSig,    5000);  // señales cada 5s (antes 30s)
+    const i2 = setInterval(fetchPre,   10000);  // pre-alertas cada 10s
     const i3 = setInterval(fetchStats, 60000);
     const i4 = setInterval(fetchRisk,  30000);
     const i5 = setInterval(fetchMkt,   15000);

@@ -80,8 +80,9 @@ export async function openPocketOption(assetName, symbol, signalType) {
   const mode      = getPOMode();
   const pairLabel = assetName || symbol.replace("OTC_", "").replace(/([A-Z]{3})([A-Z]{3})/, "$1/$2") + " OTC";
 
-  // Copia el nombre exacto tal como aparece en PO al portapapeles
-  try { await navigator.clipboard.writeText(pairLabel); } catch (_) {}
+  // Copia en formato de búsqueda de PO: euraud_otc (minúsculas + guión bajo)
+  const searchTerm = assetId.toLowerCase();   // ej: "euraud_otc"
+  try { await navigator.clipboard.writeText(searchTerm); } catch (_) {}
 
   // Muestra recordatorio flotante con el par y la dirección
   _showPOReminder(pairLabel, signalType);
@@ -120,11 +121,13 @@ function _showPOReminder(pairLabel, signalType) {
     cursor:       "pointer",
   });
 
+  const searchTerm = assetId.toLowerCase();
   el.innerHTML = `
-    <div style="font-size:11px;color:#888;margin-bottom:4px;">Busca en Pocket Option:</div>
-    <div style="font-size:22px;font-weight:bold;color:${color};letter-spacing:2px;">${pairLabel}</div>
+    <div style="font-size:11px;color:#888;margin-bottom:4px;">Pega esto en el buscador de PO:</div>
+    <div style="font-size:22px;font-weight:bold;color:${color};letter-spacing:2px;">${searchTerm}</div>
     <div style="font-size:16px;font-weight:bold;color:${color};margin-top:4px;">${dir}</div>
-    <div style="font-size:10px;color:#555;margin-top:8px;">✓ Copiado al portapapeles · Clic para cerrar</div>
+    <div style="font-size:10px;color:#00FF94;margin-top:8px;">✓ Copiado al portapapeles (Ctrl+V)</div>
+    <div style="font-size:10px;color:#555;margin-top:2px;">Clic aquí para cerrar</div>
   `;
 
   el.addEventListener("click", () => el.remove());
