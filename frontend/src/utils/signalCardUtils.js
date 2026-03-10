@@ -85,7 +85,7 @@ export async function openPocketOption(assetName, symbol, signalType) {
   try { await navigator.clipboard.writeText(searchTerm); } catch (_) {}
 
   // Muestra recordatorio flotante con el par y la dirección
-  _showPOReminder(pairLabel, signalType);
+  _showPOReminder(assetId, signalType);
 
   const newTab = window.open(url, "_blank", "noopener,noreferrer");
   if (newTab) newTab.opener = null;
@@ -93,7 +93,7 @@ export async function openPocketOption(assetName, symbol, signalType) {
 }
 
 // ── Recordatorio flotante: par + dirección + instrucción ─────────────────────
-function _showPOReminder(pairLabel, signalType) {
+function _showPOReminder(assetId, signalType) {
   // Elimina el anterior si existe
   const prev = document.getElementById("po-reminder");
   if (prev) prev.remove();

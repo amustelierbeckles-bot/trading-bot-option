@@ -67,6 +67,7 @@ export default function useDashboard() {
   }, []);
 
   // ── Fetches ───────────────────────────────────────────────────────────────
+  const lastSigIdRef = useRef(null);
   const fetchSig = useCallback(async () => {
     const t0 = Date.now();
     try {
@@ -82,11 +83,15 @@ export default function useDashboard() {
       if (live.length) {
         const top = live.reduce((b, s) => s.quality_score > (b?.quality_score || 0) ? s : b, null);
         setAct(top.signal_type);
-        log(`✓ ${top.signal_type} ${top.asset_name || top.symbol} · ${((top.quality_score || 0) * 100).toFixed(0)}%`, sc(top.signal_type));
+        // Solo logea si la señal es nueva (distinto id)
+        if (top.id !== lastSigIdRef.current) {
+          lastSigIdRef.current = top.id;
+          log(`✓ ${top.signal_type} ${top.asset_name || top.symbol} · ${((top.quality_score || 0) * 100).toFixed(0)}%`, sc(top.signal_type));
+        }
       } else {
         setAct("IDLE");
       }
-    } catch { log("✗ Error señales", T.put); }
+    } catch { log("✗ Señales de error", T.put); }
   }, [log]);
 
   const fetchPre = useCallback(async () => {
