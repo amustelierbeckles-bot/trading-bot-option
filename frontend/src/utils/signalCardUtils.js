@@ -69,14 +69,66 @@ export const formatTimestampUTC5 = (raw) => {
   return `Generada: ${utc5.toISOString().slice(11, 19)} (UTC-5)`;
 };
 
-// ── Abre Pocket Option en nueva pestaña con el par pre-seleccionado ──────────
-export async function openPocketOption(assetName, symbol) {
-  const assetId = ASSET_MAP[symbol] ?? (symbol.replace("OTC_", "").toLowerCase() + "_otc");
-  const baseUrl = getPOBaseUrl();
-  const url     = `${baseUrl}#${assetId}`;
-  const mode    = getPOMode();
-  try { await navigator.clipboard.writeText(assetName); } catch (_) {}
+// ── Abre Pocket Option en nueva pestaña con el par copiado al portapapeles ───
+// NOTA: PocketOption ignora el hash de URL para selección de activos.
+// La estrategia es: abrir PO + copiar el nombre exacto del par al portapapeles
+// + mostrar un recordatorio flotante que el usuario cierra cuando ya seleccionó.
+export async function openPocketOption(assetName, symbol, signalType) {
+  const assetId   = ASSET_MAP[symbol] ?? (symbol.replace("OTC_", "").toLowerCase() + "_otc");
+  const baseUrl   = getPOBaseUrl();
+  const url       = `${baseUrl}#${assetId}`;
+  const mode      = getPOMode();
+  const pairLabel = assetName || symbol.replace("OTC_", "").replace(/([A-Z]{3})([A-Z]{3})/, "$1/$2") + " OTC";
+
+  // Copia el nombre exacto tal como aparece en PO al portapapeles
+  try { await navigator.clipboard.writeText(pairLabel); } catch (_) {}
+
+  // Muestra recordatorio flotante con el par y la dirección
+  _showPOReminder(pairLabel, signalType);
+
   const newTab = window.open(url, "_blank", "noopener,noreferrer");
   if (newTab) newTab.opener = null;
   return { url, mode, assetId };
+}
+
+// ── Recordatorio flotante: par + dirección + instrucción ─────────────────────
+function _showPOReminder(pairLabel, signalType) {
+  // Elimina el anterior si existe
+  const prev = document.getElementById("po-reminder");
+  if (prev) prev.remove();
+
+  const isCall  = signalType === "CALL" || signalType === "BUY";
+  const color   = isCall ? "#00FF94" : "#FF0055";
+  const dir     = isCall ? "BUY ↑" : "SELL ↓";
+
+  const el = document.createElement("div");
+  el.id = "po-reminder";
+  Object.assign(el.style, {
+    position:     "fixed",
+    bottom:       "24px",
+    left:         "50%",
+    transform:    "translateX(-50%)",
+    zIndex:       "99999",
+    background:   "#0a0a0f",
+    border:       `2px solid ${color}`,
+    borderRadius: "12px",
+    padding:      "16px 24px",
+    textAlign:    "center",
+    fontFamily:   "monospace",
+    boxShadow:    `0 0 30px ${color}40`,
+    minWidth:     "280px",
+    cursor:       "pointer",
+  });
+
+  el.innerHTML = `
+    <div style="font-size:11px;color:#888;margin-bottom:4px;">Busca en Pocket Option:</div>
+    <div style="font-size:22px;font-weight:bold;color:${color};letter-spacing:2px;">${pairLabel}</div>
+    <div style="font-size:16px;font-weight:bold;color:${color};margin-top:4px;">${dir}</div>
+    <div style="font-size:10px;color:#555;margin-top:8px;">✓ Copiado al portapapeles · Clic para cerrar</div>
+  `;
+
+  el.addEventListener("click", () => el.remove());
+  // Auto-cierre en 30 segundos
+  setTimeout(() => el && el.remove(), 30000);
+  document.body.appendChild(el);
 }

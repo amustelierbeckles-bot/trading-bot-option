@@ -23,10 +23,10 @@ import {
 const EXPIRY_MINUTES = 2;
 
 async function openPocketOption(signal) {
-  const { mode } = await openPO(signal.asset_name, signal.symbol);
+  const { mode } = await openPO(signal.asset_name, signal.symbol, signal.type);
   toast.success(
-    `✅ ${signal.asset_name} abierto en PO (${mode === "real" ? "REAL" : "DEMO"}) · ${EXPIRY_MINUTES} min`,
-    { duration: 6000 }
+    `✅ ${signal.asset_name} — ${signal.type} · Busca el par en PO`,
+    { duration: 5000 }
   );
 }
 
