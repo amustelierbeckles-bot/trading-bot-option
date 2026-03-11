@@ -54,21 +54,17 @@ OTC_SYMBOL_MAP = {
 # Inverso: símbolo PO → símbolo OTC
 PO_TO_OTC = {v: k for k, v in OTC_SYMBOL_MAP.items()}
 
-# ── Headers idénticos a Chrome 145 en Edge (capturados del F12) ──────────────
+# ── Headers seguros para websockets lib (NO incluir Connection/Upgrade/Sec-*
+#    porque la librería websockets los gestiona automáticamente y duplicarlos
+#    causa HTTP 400) ──────────────────────────────────────────────────────────
 CHROME_HEADERS = {
-    "Accept-Encoding":         "gzip, deflate, br, zstd",
-    "Accept-Language":         "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control":           "no-cache",
-    "Connection":              "Upgrade",
-    "Host":                    "demo-api-eu.po.market",
-    "Origin":                  "https://pocketoption.com",
-    "Pragma":                  "no-cache",
-    "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
-    "Sec-WebSocket-Version":   "13",
-    "Upgrade":                 "websocket",
-    "User-Agent":              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                               "Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+    "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+    "Origin":           "https://pocketoption.com",
+    "Accept-Language":  "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control":    "no-cache",
+    "Pragma":           "no-cache",
 }
 
 # ── Constantes ────────────────────────────────────────────────────────────────
@@ -240,7 +236,7 @@ class POWebSocketProvider:
 
     async def _connect_and_run(self):
         """Establece conexión y maneja mensajes."""
-        headers = {**CHROME_HEADERS, "Host": WS_URL.split("/")[2]}
+        headers = {**CHROME_HEADERS}
 
         # Cookie de sesión — solo incluir si el SSID fue obtenido desde la
         # misma IP del VPS.  Si PO rechaza con HTTP 400, reconectamos sin cookie
