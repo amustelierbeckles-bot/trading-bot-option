@@ -762,6 +762,22 @@ async def lifespan(app: FastAPI):
         except Exception as re:
             logger.warning("⚠️  Redis no disponible (%s) — usando caché in-memory", re)
 
+    # ── PocketOption WebSocket (auto-ejecución) ───────────────────────────────
+    po_ssid = os.getenv("PO_SSID", "").strip()
+    app.state.po_provider = None
+    if po_ssid:
+        try:
+            from po_websocket import init_po_provider
+            is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
+            po = init_po_provider(ssid=po_ssid, is_demo=is_demo)
+            await po.start()
+            app.state.po_provider = po
+            logger.info("🔌 PO WebSocket iniciado | modo=%s", "DEMO" if is_demo else "REAL")
+        except Exception as po_err:
+            logger.warning("⚠️  PO WebSocket no disponible: %s", po_err)
+    else:
+        logger.info("⏭  PO WebSocket desactivado (PO_SSID no configurado)")
+
     # ── Índices MongoDB ────────────────────────────────────────────────────────
     if app.state.use_mongo:
         try:
@@ -772,6 +788,7 @@ async def lifespan(app: FastAPI):
             await db.signals.create_index([("day_bucket", 1), ("symbol", 1)])
             await db.signals.create_index([("audit_confidence", 1), ("result", 1)])
             await db.signals.create_index([("created_at", -1)])  # paginación reciente
+            await db.signals.create_index([("execution_mode", 1), ("created_at", -1)])  # analytics
             # trades: queries de auditoría
             await db.trades.create_index([("symbol", 1), ("result", 1), ("created_at", -1)])
             await db.trades.create_index([("signal_id", 1)], unique=True, sparse=True)
@@ -811,6 +828,8 @@ async def lifespan(app: FastAPI):
 
     logger.info("🛑 Apagando servidor...")
     await provider.stop()
+    if getattr(app.state, "po_provider", None):
+        await app.state.po_provider.stop()
     if app.state.mongodb:
         app.state.mongodb.close()
 
@@ -1029,6 +1048,118 @@ def _get_market_session(utc_hour: int, utc_minute: int = 0) -> dict:
         ),
         "utc5_display":  f"{utc5_hour:02d}:{utc5_min:02d} UTC-5",
     }
+
+
+async def _auto_execute_trade(doc: dict, app, quality_score: float):
+    """
+    Ejecuta automáticamente un trade en PocketOption Demo cuando AUTO_EXECUTE=true.
+
+    Condiciones de seguridad (todas deben cumplirse):
+    - AUTO_EXECUTE=true en .env
+    - Circuit Breaker no activo
+    - WebSocket de PO conectado y autenticado
+    - Win Rate de las últimas 20 ops de alta confianza >= 55%
+
+    Funciona en paralelo con Telegram/Dashboard — no bloquea nada.
+    """
+    from po_websocket import get_po_provider  # evita circular import al nivel de módulo
+
+    try:
+        # ── Gate 1: Circuit Breaker ────────────────────────────────────────────
+        if _cb_is_blocked():
+            logger.warning("🛑 Auto-exec bloqueado — Circuit Breaker activo")
+            return
+
+        # ── Gate 2: Verificar Win Rate mínimo ─────────────────────────────────
+        auto_min_wr = float(os.getenv("AUTO_EXECUTE_MIN_WR", "55.0"))
+        if app.state.use_mongo:
+            cursor = app.state.db.trades.find({
+                "result":           {"$in": ["win", "loss"]},
+                "audit_confidence": "high",
+            }).sort("created_at", -1).limit(20)
+            recent = await cursor.to_list(20)
+        else:
+            recent = [
+                t for t in app.state.trades_store
+                if t.get("result") in ("win", "loss")
+                and t.get("audit_confidence", "high") == "high"
+            ][-20:]
+
+        if len(recent) >= 20:
+            wr_recent = sum(1 for t in recent if t.get("result") == "win") / len(recent) * 100
+            if wr_recent < auto_min_wr:
+                logger.warning(
+                    "🛑 Auto-exec bloqueado — WR reciente %.1f%% < umbral %.1f%%",
+                    wr_recent, auto_min_wr
+                )
+                return
+
+        # ── Gate 3: PO WebSocket conectado ────────────────────────────────────
+        po = get_po_provider()
+        if not po or not po.is_connected:
+            logger.warning("🛑 Auto-exec bloqueado — PO WebSocket no conectado")
+            return
+
+        # ── Ejecuta la orden ───────────────────────────────────────────────────
+        symbol    = doc.get("symbol", "")
+        direction = doc.get("type", "").lower()   # "call" o "put"
+        amount    = float(os.getenv("AUTO_EXECUTE_AMOUNT", "100"))
+        is_demo   = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
+
+        result = await po.place_trade(
+            symbol         = symbol,
+            direction      = direction,
+            amount         = amount,
+            expiry_seconds = 120,
+            is_demo        = is_demo,
+        )
+
+        # ── Actualiza el signal document ──────────────────────────────────────
+        now       = datetime.utcnow()
+        sig_id    = doc.get("id", "")
+        update    = {
+            "execution_mode":  "auto",
+            "executed_at":     now,
+            "executed_amount": amount,
+            "po_order_id":     result.get("order_id"),
+        }
+
+        if app.state.use_mongo and sig_id:
+            from bson import ObjectId
+            try:
+                await app.state.db.signals.update_one(
+                    {"_id": ObjectId(sig_id)},
+                    {"$set": update},
+                )
+            except Exception:
+                pass
+        else:
+            for s in app.state.signals_store:
+                if s.get("id") == sig_id:
+                    s.update(update)
+                    s["executed_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                    break
+
+        logger.info(
+            "🤖 Auto-exec | %s %s $%.0f | order=%s | status=%s",
+            direction.upper(), symbol, amount,
+            result.get("order_id", "?")[:16], result.get("status", "?")
+        )
+
+        # Notifica por Telegram que se auto-ejecutó
+        auto_msg = (
+            f"🤖 *AUTO-EXEC*\n"
+            f"Par: `{doc.get('asset_name', symbol)}`\n"
+            f"Dirección: `{direction.upper()}`\n"
+            f"Monto: `${amount:.0f}`\n"
+            f"Score: `{quality_score*100:.0f}%`\n"
+            f"Orden: `{result.get('order_id','?')[:12]}`\n"
+            f"Estado: `{result.get('status','?')}`"
+        )
+        await _send_telegram(auto_msg)
+
+    except Exception as e:
+        logger.error("❌ Error en auto-exec: %s", e)
 
 
 async def _auto_scan_loop(app: "FastAPI"):
@@ -1371,6 +1502,17 @@ async def _auto_scan_loop(app: "FastAPI"):
                     "data_freshness_ms":   data_freshness_ms,
                     "scan_elapsed_ms":     round(cycle_elapsed * 1000),
                     "fetch_elapsed_ms":    round(fetch_elapsed * 1000),
+                    # ── Signal Intelligence v5.0: registro universal ────────────
+                    # execution_mode: "unexecuted" | "manual" | "auto" | "confirmed"
+                    "execution_mode":      "unexecuted",
+                    "executed_at":         None,
+                    "executed_amount":     None,
+                    "close_price":         None,
+                    "pip_diff":            None,
+                    "pct_diff":            None,
+                    "result":              None,
+                    "theoretical_result":  None,   # filled by _verify_every_signal after 125s
+                    "po_order_id":         None,
                 }
 
                 if use_mongo:
@@ -1378,6 +1520,8 @@ async def _auto_scan_loop(app: "FastAPI"):
                     db_doc.pop("id", None)
                     result = await db.signals.insert_one(db_doc)
                     doc["id"] = str(result.inserted_id)
+                    # Verifica resultado teórico para TODAS las señales sin importar ejecución
+                    asyncio.create_task(_verify_every_signal(doc["id"], doc, app))
                 else:
                     cutoff = emit_time - timedelta(minutes=5)
                     store[:] = [
@@ -1412,6 +1556,15 @@ async def _auto_scan_loop(app: "FastAPI"):
                     is_fire   = score >= 0.75 or len(signal.get("strategies_agreeing", [])) >= 3
                     if not only_fire or is_fire:
                         asyncio.create_task(_send_signal_telegram(doc, app))
+
+                    # ── Auto-ejecución (Phase 2) — desactivada por defecto ─────
+                    # Activa con AUTO_EXECUTE=true en .env SOLO después de validar
+                    # un Win Rate >= 55% con >= 20 operaciones verificadas
+                    auto_execute = os.getenv("AUTO_EXECUTE", "false").lower() == "true"
+                    if auto_execute:
+                        asyncio.create_task(
+                            _auto_execute_trade(doc, app, score)
+                        )
 
             if not top:
                 logger.info("🔍 Ciclo sin señales (umbral %.2f) | scan=%.1fs",
@@ -3273,6 +3426,273 @@ async def get_stats(request: Request, window: str = "1h"):
     return result
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Signal Intelligence v5.0 — Registro universal de ejecución
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ExecuteSignalBody(BaseModel):
+    execution_mode: str = "manual"   # "manual" | "auto"
+    amount:         float = 100.0    # monto en USD
+    po_order_id:    Optional[str] = None
+
+
+@app.post("/v1/signals/{signal_id}/execute")
+async def execute_signal(signal_id: str, body: ExecuteSignalBody, request: Request):
+    """
+    Marca una señal como ejecutada (manual o automáticamente).
+    Llamado desde el dashboard cuando el usuario hace click en "Abrir PO".
+
+    Body: { "execution_mode": "manual", "amount": 100, "po_order_id": null }
+    """
+    now = datetime.utcnow()
+    update = {
+        "execution_mode":    body.execution_mode,
+        "executed_at":       now,
+        "executed_amount":   body.amount,
+    }
+    if body.po_order_id:
+        update["po_order_id"] = body.po_order_id
+
+    use_mongo = request.app.state.use_mongo
+
+    if use_mongo:
+        from bson import ObjectId
+        try:
+            res = await request.app.state.db.signals.update_one(
+                {"_id": ObjectId(signal_id)},
+                {"$set": update},
+            )
+            if res.matched_count == 0:
+                raise HTTPException(status_code=404, detail="Signal not found")
+        except Exception as exc:
+            if "invalid ObjectId" in str(exc).lower() or "not a valid objectid" in str(exc).lower():
+                raise HTTPException(status_code=404, detail="Signal not found")
+            raise
+    else:
+        found = False
+        for s in request.app.state.signals_store:
+            if s.get("id") == signal_id:
+                s.update(update)
+                s["executed_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="Signal not found")
+
+    logger.info("▶️  Señal %s marcada como ejecutada | modo=%s monto=%.0f",
+                signal_id, body.execution_mode, body.amount)
+
+    return {
+        "ok":             True,
+        "signal_id":      signal_id,
+        "execution_mode": body.execution_mode,
+        "executed_at":    now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+
+@app.get("/v1/signals/stats/comparison")
+async def signals_comparison(request: Request, window: str = "24h"):
+    """
+    Comparativa de rendimiento entre señales ejecutadas automáticamente,
+    manualmente o no ejecutadas.
+
+    ?window=1h | 4h | 24h | 7d
+
+    Respuesta:
+    {
+      "auto":       { "total": 0,  "win": 0,  "loss": 0, "wr": 0,   "avg_pips": 0 },
+      "manual":     { "total": 12, "win": 5,  "loss": 7, "wr": 41.7,"avg_pips": -1.2 },
+      "unexecuted": { "total": 31, "would_win": 14, "hypothetical_wr": 45.2 },
+      "all":        { "total": 43, "win": 5,  "loss": 7, "wr": ... },
+      "window": "24h", "generated_at": "..."
+    }
+    """
+    _VALID: dict = {"1h": 60, "4h": 240, "24h": 1440, "7d": 10080}
+    minutes = _VALID.get(window, 1440)
+    now     = datetime.utcnow()
+    cutoff  = now - timedelta(minutes=minutes)
+
+    use_mongo = request.app.state.use_mongo
+
+    if use_mongo:
+        cursor = request.app.state.db.signals.find({
+            "created_at": {"$gte": cutoff},
+        })
+        signals = await cursor.to_list(5000)
+        for s in signals:
+            s["id"] = str(s.pop("_id", ""))
+            if isinstance(s.get("created_at"), datetime):
+                s["created_at"] = s["created_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            if isinstance(s.get("executed_at"), datetime):
+                s["executed_at"] = s["executed_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            if isinstance(s.get("verified_at"), datetime):
+                s["verified_at"] = s["verified_at"].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    else:
+        signals = [
+            s for s in request.app.state.signals_store
+            if _try_parse_ts(s.get("created_at", "")) >= cutoff
+        ]
+
+    def _bucket_stats(subset: list) -> dict:
+        verified = [s for s in subset if s.get("result") in ("win", "loss")]
+        total    = len(subset)
+        wins     = sum(1 for s in verified if s.get("result") == "win")
+        losses   = sum(1 for s in verified if s.get("result") == "loss")
+        pips     = [s["pip_diff"] for s in verified if s.get("pip_diff") is not None]
+        avg_pips = round(sum(pips) / len(pips), 2) if pips else None
+        wr       = round(wins / len(verified) * 100, 1) if verified else None
+        return {
+            "total":    total,
+            "verified": len(verified),
+            "win":      wins,
+            "loss":     losses,
+            "wr":       wr,
+            "avg_pips": avg_pips,
+        }
+
+    auto_sigs      = [s for s in signals if s.get("execution_mode") == "auto"]
+    manual_sigs    = [s for s in signals if s.get("execution_mode") == "manual"]
+    unexec_sigs    = [s for s in signals if not s.get("execution_mode")]
+
+    # Para señales no ejecutadas calculamos el "hipotético" (auditoría las verifica igual)
+    unexec_verified = [s for s in unexec_sigs if s.get("result") in ("win", "loss")]
+    hyp_win  = sum(1 for s in unexec_verified if s.get("result") == "win")
+    hyp_wr   = round(hyp_win / len(unexec_verified) * 100, 1) if unexec_verified else None
+
+    return {
+        "auto":       _bucket_stats(auto_sigs),
+        "manual":     _bucket_stats(manual_sigs),
+        "unexecuted": {
+            "total":            len(unexec_sigs),
+            "verified":         len(unexec_verified),
+            "would_win":        hyp_win,
+            "hypothetical_wr":  hyp_wr,
+        },
+        "all":          _bucket_stats(signals),
+        "window":       window,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+
+@app.post("/v1/signals/{signal_id}/mark-executed")
+async def mark_signal_executed(signal_id: str, request: Request):
+    """
+    Marca una señal como ejecutada manualmente (dashboard → "Abrir PO").
+    Endpoint simplificado sin body requerido — registra execution_mode="manual".
+    El resultado teórico ya fue (o será) llenado por _verify_every_signal.
+    """
+    now = datetime.utcnow()
+    update = {
+        "execution_mode":   "manual",
+        "executed_at":      now,
+    }
+
+    use_mongo = request.app.state.use_mongo
+
+    if use_mongo:
+        from bson import ObjectId
+        try:
+            res = await request.app.state.db.signals.update_one(
+                {"_id": ObjectId(signal_id)},
+                {"$set": update},
+            )
+            if res.matched_count == 0:
+                raise HTTPException(status_code=404, detail="Signal not found")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if "invalid objectid" in str(exc).lower() or "not a valid objectid" in str(exc).lower():
+                raise HTTPException(status_code=404, detail="Signal not found")
+            raise
+    else:
+        found = False
+        for s in request.app.state.signals_store:
+            if s.get("id") == signal_id:
+                s["execution_mode"] = "manual"
+                s["executed_at"]    = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="Signal not found")
+
+    logger.info("▶️  Señal %s marcada como ejecutada manualmente", signal_id)
+    return {
+        "ok":             True,
+        "signal_id":      signal_id,
+        "execution_mode": "manual",
+        "executed_at":    now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+
+@app.get("/v1/signal-analytics")
+async def signal_analytics(request: Request, window: str = "24h"):
+    """
+    Estadísticas universales de señales con desglose por modo de ejecución.
+    Muestra el rendimiento real del bot (theoretical) vs. ejecución manual.
+
+    ?window=1h | 4h | 24h | 7d
+    """
+    _VALID: dict = {"1h": 60, "4h": 240, "24h": 1440, "7d": 10080}
+    minutes = _VALID.get(window, 1440)
+    now     = datetime.utcnow()
+    cutoff  = now - timedelta(minutes=minutes)
+
+    use_mongo = request.app.state.use_mongo
+
+    if use_mongo:
+        cursor  = request.app.state.db.signals.find({"created_at": {"$gte": cutoff}})
+        signals = await cursor.to_list(5000)
+        for s in signals:
+            s["id"] = str(s.pop("_id", ""))
+            for fld in ("created_at", "executed_at", "verified_at"):
+                if isinstance(s.get(fld), datetime):
+                    s[fld] = s[fld].strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    else:
+        signals = [
+            s for s in request.app.state.signals_store
+            if _try_parse_ts(s.get("created_at", "")) >= cutoff
+        ]
+
+    def _stats(subset: list) -> dict:
+        verified = [s for s in subset if s.get("theoretical_result") in ("win", "loss")]
+        total    = len(subset)
+        wins     = sum(1 for s in verified if s.get("theoretical_result") == "win")
+        losses   = sum(1 for s in verified if s.get("theoretical_result") == "loss")
+        pips     = [s["pip_diff"] for s in verified if s.get("pip_diff") is not None]
+        avg_pips = round(sum(pips) / len(pips), 2) if pips else None
+        win_rate = round(wins / len(verified) * 100, 1) if verified else None
+        return {
+            "total":      total,
+            "verified":   len(verified),
+            "wins":       wins,
+            "losses":     losses,
+            "win_rate":   win_rate,
+            "avg_pip_diff": avg_pips,
+        }
+
+    unexecuted = [s for s in signals if s.get("execution_mode") == "unexecuted"]
+    manual     = [s for s in signals if s.get("execution_mode") == "manual"]
+    confirmed  = [s for s in signals if s.get("execution_mode") == "confirmed"]
+    auto       = [s for s in signals if s.get("execution_mode") == "auto"]
+
+    all_verified = [s for s in signals if s.get("theoretical_result") in ("win", "loss")]
+    bot_wins     = sum(1 for s in all_verified if s.get("theoretical_result") == "win")
+    bot_wr       = round(bot_wins / len(all_verified) * 100, 1) if all_verified else None
+
+    return {
+        "total_captured":    len(signals),
+        "period_hours":      minutes // 60,
+        "bot_true_win_rate": bot_wr,
+        "by_mode": {
+            "unexecuted": _stats(unexecuted),
+            "manual":     _stats(manual),
+            "confirmed":  _stats(confirmed),
+            "auto":       _stats(auto),
+        },
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+
 @app.post("/api/risk/reset-circuit-breaker")
 async def reset_circuit_breaker(request: Request):
     """
@@ -3790,33 +4210,42 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
             close_price = await provider.get_price_for_audit(symbol)
 
         if close_price is None:
-            # Fallback: precio simulado con momentum actual
-            # Marcamos como "low" para que el Win Rate pueda filtrar estos trades
-            close_price = get_asset_price(symbol)
+            # Sin precio real → no marcar como pérdida (evita falsos [L] en Telegram)
             confidence  = "low"
-            logger.warning("⚠️  Auditoría %s — usando precio simulado (API sin créditos)",
-                           symbol)
+            logger.warning("⚠️  Auditoría %s — sin precio real, resultado omitido", symbol)
+            return None
+
+        pip_diff = round((close_price - entry_price) / entry_price * 10000, 1)
+        pct_diff = round((close_price - entry_price) / entry_price * 100, 4)
+
+        # Zona muerta OTC: movimientos < 0.5 pips son ruido (spread sintético de PO)
+        # Evita falsos [L] cuando el precio apenas se movió
+        is_otc = "OTC_" in symbol
+        min_pip_move = 0.5 if is_otc else 0.1
+        if abs(pip_diff) < min_pip_move:
+            logger.info("⚖️  Auditoría %s — zona muerta (pip_diff=%.2f) → inconclusive",
+                        symbol, pip_diff)
+            return None
 
         # Determina WIN/LOSS
         if sig_type == "CALL":
             outcome = "win" if close_price > entry_price else "loss"
         else:
             outcome = "win" if close_price < entry_price else "loss"
-
-        pip_diff = round((close_price - entry_price) / entry_price * 10000, 1)
         now      = datetime.utcnow()
 
         update_fields = {
             "result":             outcome,
             "close_price":        close_price,
             "pip_diff":           pip_diff,
+            "pct_diff":           pct_diff,
             "verified_at":        now,
-            "verified_at_local":  _local_time(now).strftime("%Y-%m-%dT%H:%M:%S") + " UTC-5",
+            "verified_at_local":  _fmt_time(now),
             "source":             "auto_audit_verified",
-            "audit_confidence":   confidence,   # nuevo campo para filtrar en Win Rate
+            "audit_confidence":   confidence,
         }
 
-        # Actualiza en MongoDB
+        # Actualiza en MongoDB — trade document
         if app.state.use_mongo and audit_id:
             from bson import ObjectId
             try:
@@ -3825,17 +4254,35 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
                     {"$set": update_fields}
                 )
             except Exception as mongo_err:
-                logger.warning("⚠️  Error actualizando MongoDB: %s", mongo_err)
+                logger.warning("⚠️  Error actualizando trade en MongoDB: %s", mongo_err)
         else:
             for t in app.state.trades_store:
                 if t.get("id") == audit_id or t.get("signal_id") == signal.get("id", ""):
                     t.update(update_fields)
                     break
 
+        # También actualiza el signal document con el resultado
+        signal_id = signal.get("id", "")
+        if app.state.use_mongo and signal_id:
+            from bson import ObjectId
+            try:
+                await app.state.db.signals.update_one(
+                    {"_id": ObjectId(signal_id)},
+                    {"$set": {
+                        "result":       outcome,
+                        "close_price":  close_price,
+                        "pip_diff":     pip_diff,
+                        "pct_diff":     pct_diff,
+                        "verified_at":  now,
+                    }}
+                )
+            except Exception:
+                pass  # signal_id puede ser temporal (no-ObjectId), ignorar silenciosamente
+
         logger.info(
-            "✅ Auditoría verificada | %s %s | entrada=%.5f cierre=%.5f | %s | %+.1f pips [%s]",
+            "✅ Auditoría verificada | %s %s | entrada=%.5f cierre=%.5f | %s | %+.1f pips (%+.4f%%) [%s]",
             sig_type, symbol, entry_price, close_price,
-            outcome.upper(), pip_diff, confidence
+            outcome.upper(), pip_diff, pct_diff, confidence
         )
 
         # Invalida el caché de Win Rate para este par y global
@@ -4132,6 +4579,101 @@ async def _handle_tg_callback(callback: dict, app):
         )
         _tg_active_trades.pop(trade_key, None)
         logger.info("📱 Resultado manual registrado | %s | %s", outcome.upper(), signal.get("asset_name"))
+
+
+async def _verify_every_signal(signal_id: str, signal: dict, app) -> None:
+    """
+    Verificación universal — corre para TODAS las señales, sin importar si el
+    usuario las ejecutó o no.  Obtiene el precio de cierre real 125 segundos
+    después de la emisión y registra el resultado teórico en el documento de
+    la señal (colección `signals`, no `trades`).
+
+    Campos actualizados:
+        theoretical_result: "win" | "loss"
+        result:             se llena solo si execution_mode sigue en "unexecuted"
+        close_price, pip_diff, pct_diff, verified_at
+    """
+    await asyncio.sleep(125)   # espera expiración de la vela (1 min) + buffer
+
+    symbol      = signal.get("symbol", "")
+    entry_price = float(signal.get("entry_price") or signal.get("price") or 0)
+    sig_type    = signal.get("type", "")
+
+    if not entry_price or not symbol or not signal_id:
+        logger.warning("⚠️  _verify_every_signal abortada — datos incompletos (%s)", signal_id)
+        return
+
+    try:
+        provider    = get_provider()
+        close_price = None
+        confidence  = "high"
+
+        if provider and provider.is_configured:
+            close_price = await provider.get_price_for_audit(symbol)
+
+        if close_price is None:
+            logger.warning("⚠️  _verify_every_signal %s — sin precio real, omitido", symbol)
+            return
+
+        pip_diff = round((close_price - entry_price) / entry_price * 10000, 1)
+        pct_diff = round((close_price - entry_price) / entry_price * 100, 4)
+
+        # Zona muerta OTC: movimiento < 0.5 pips es ruido sintético de PO
+        is_otc = "OTC_" in symbol
+        min_pip_move = 0.5 if is_otc else 0.1
+        if abs(pip_diff) < min_pip_move:
+            logger.info("⚖️  _verify_every_signal %s — zona muerta (pip_diff=%.2f) → omitido",
+                        symbol, pip_diff)
+            return
+
+        if sig_type == "CALL":
+            outcome = "win" if close_price > entry_price else "loss"
+        else:
+            outcome = "win" if close_price < entry_price else "loss"
+        now      = datetime.utcnow()
+
+        update_fields: dict = {
+            "theoretical_result": outcome,
+            "close_price":        close_price,
+            "pip_diff":           pip_diff,
+            "pct_diff":           pct_diff,
+            "verified_at":        now,
+            "audit_confidence":   confidence,
+        }
+
+        if app.state.use_mongo:
+            from bson import ObjectId
+            # Fetch current execution_mode to decide whether to fill "result"
+            doc = await app.state.db.signals.find_one(
+                {"_id": ObjectId(signal_id)},
+                {"execution_mode": 1}
+            )
+            current_mode = (doc or {}).get("execution_mode", "unexecuted")
+            if current_mode == "unexecuted":
+                update_fields["result"] = outcome   # bot's raw performance
+
+            await app.state.db.signals.update_one(
+                {"_id": ObjectId(signal_id)},
+                {"$set": update_fields},
+            )
+            logger.info(
+                "📊 Verificación universal | %s %s | %s | pip_diff=%+.1f | mode=%s",
+                sig_type, symbol, outcome.upper(), pip_diff, current_mode
+            )
+        else:
+            # Fallback in-memory store
+            for s in app.state.signals_store:
+                if s.get("id") == signal_id:
+                    s.update({k: v for k, v in update_fields.items() if k != "verified_at"})
+                    s["verified_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                    if s.get("execution_mode") == "unexecuted":
+                        s["result"] = outcome
+                    break
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.error("❌ Error en _verify_every_signal %s: %s", signal_id, exc)
 
 
 async def _autonomous_audit(chat_id: str, msg_id: int, signal: dict,
