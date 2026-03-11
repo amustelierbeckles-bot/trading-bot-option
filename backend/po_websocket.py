@@ -162,6 +162,9 @@ class POWebSocketProvider:
         self.ticks_received:  int   = 0
         self.connected_since: float = 0.0
 
+        # Órdenes pendientes: request_id → asyncio.Future
+        self._pending_orders: Dict[str, asyncio.Future] = {}
+
     # ── Configuración ─────────────────────────────────────────────────────────
 
     def configure(self, ssid: str, secret: str = "", user_id: int = 0,
@@ -215,8 +218,18 @@ class POWebSocketProvider:
                 break
             except Exception as e:
                 self._consecutive_errors += 1
+                err_str = str(e)
                 logger.warning("⚠️  Error WebSocket: %s (intento %d)",
                                e, self._consecutive_errors)
+
+                # HTTP 400 con cookie → PO rechaza por IP mismatch.
+                # Reintenta sin cookie (demo acepta conexiones anónimas).
+                if "400" in err_str and not getattr(self, "_skip_cookie", False):
+                    self._skip_cookie = True
+                    self._consecutive_errors = 0
+                    logger.info("🔄 Cookie rechazada por IP — reintentando sin cookie")
+                    await asyncio.sleep(2)
+                    continue
 
                 if self._consecutive_errors >= self._max_errors:
                     self._activate_kill_switch()
@@ -227,12 +240,16 @@ class POWebSocketProvider:
 
     async def _connect_and_run(self):
         """Establece conexión y maneja mensajes."""
-        # Headers con cookie de sesión completa
         headers = {**CHROME_HEADERS, "Host": WS_URL.split("/")[2]}
-        if getattr(self, "_full_cookie", ""):
-            headers["Cookie"] = self._full_cookie
-        elif self._ssid:
-            headers["Cookie"] = f"ci_session={self._ssid}"
+
+        # Cookie de sesión — solo incluir si el SSID fue obtenido desde la
+        # misma IP del VPS.  Si PO rechaza con HTTP 400, reconectamos sin cookie
+        # (el endpoint demo acepta conexiones anónimas para price feeds).
+        if not getattr(self, "_skip_cookie", False):
+            if getattr(self, "_full_cookie", ""):
+                headers["Cookie"] = self._full_cookie
+            elif self._ssid:
+                headers["Cookie"] = f"ci_session={self._ssid}"
 
         async with websockets.connect(
             WS_URL,
@@ -426,6 +443,16 @@ class POWebSocketProvider:
             await self._handle_history(data)
             return
 
+        # Respuesta de orden abierta
+        if event in ("openOrder", "successOpenOrder", "order_placed"):
+            await self._handle_order_response(data)
+            return
+
+        # Resultado final de orden (win/loss)
+        if event in ("closeOrder", "successCloseOrder"):
+            await self._handle_order_close(data)
+            return
+
     async def _handle_price(self, data: dict):
         """Procesa tick de precio y actualiza buffer."""
         if not isinstance(data, dict):
@@ -479,6 +506,102 @@ class POWebSocketProvider:
                 buf.update(float(price), float(ts))
 
         logger.info("📚 Historial cargado | %s | %d velas", otc_sym, len(candles))
+
+    # ── Gestión de órdenes ────────────────────────────────────────────────────
+
+    async def _handle_order_response(self, data: dict):
+        """Resuelve el future pendiente cuando PO confirma la apertura de una orden."""
+        if not isinstance(data, dict):
+            return
+        req_id = str(data.get("requestId") or data.get("request_id") or "")
+        if req_id and req_id in self._pending_orders:
+            fut = self._pending_orders.pop(req_id)
+            if not fut.done():
+                order_id = str(data.get("id") or data.get("order_id") or req_id)
+                fut.set_result({
+                    "order_id":  order_id,
+                    "status":    "placed",
+                    "raw":       data,
+                })
+            logger.info("✅ Orden confirmada por PO | order_id=%s", req_id[:12])
+
+    async def _handle_order_close(self, data: dict):
+        """Loguea el resultado de una orden cerrada (win/loss)."""
+        if not isinstance(data, dict):
+            return
+        order_id = data.get("id") or data.get("order_id") or "?"
+        profit   = data.get("profit") or data.get("amount") or 0
+        win      = float(profit) > 0 if profit else None
+        logger.info("📋 Orden cerrada | id=%s | resultado=%s | profit=%s",
+                    order_id, "WIN" if win else "LOSS", profit)
+
+    async def place_trade(
+        self,
+        symbol:          str,
+        direction:       str,
+        amount:          float = 100.0,
+        expiry_seconds:  int   = 120,
+        is_demo:         bool  = True,
+        timeout:         float = 10.0,
+    ) -> dict:
+        """
+        Envía una orden de opción binaria a PocketOption vía WebSocket.
+
+        Parámetros:
+            symbol         - símbolo OTC interno (e.g. "OTC_EURUSD")
+            direction      - "call" o "put" (case-insensitive)
+            amount         - monto en USD (default $100)
+            expiry_seconds - duración del trade en segundos (default 120s = 2min)
+            is_demo        - True para cuenta demo, False para real
+            timeout        - segundos a esperar confirmación de PO
+
+        Retorna:
+            {"order_id": "...", "status": "placed"} si exitoso
+            {"order_id": None,  "status": "error",  "reason": "..."} si falla
+        """
+        if not self.is_connected or not self._ws:
+            return {"order_id": None, "status": "error", "reason": "WebSocket no conectado"}
+        if self._kill_switch_active:
+            return {"order_id": None, "status": "error", "reason": "Kill-switch activo"}
+
+        po_symbol  = OTC_SYMBOL_MAP.get(symbol, f"#{symbol.replace('OTC_', '')}_otc")
+        action     = direction.lower()
+        request_id = f"radar_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+
+        order_msg = json.dumps(["openOrder", {
+            "asset":      po_symbol,
+            "amount":     amount,
+            "action":     action,
+            "isDemo":     1 if is_demo else 0,
+            "requestId":  request_id,
+            "optionType": 100,   # binaria estándar
+            "time":       expiry_seconds,
+        }])
+
+        # Crea future para esperar la confirmación
+        loop = asyncio.get_event_loop()
+        fut  = loop.create_future()
+        self._pending_orders[request_id] = fut
+
+        try:
+            await self._ws.send(f"42{order_msg}")
+            logger.info("▶️  Orden enviada a PO | %s %s $%.0f %ds [req=%s]",
+                        action.upper(), po_symbol, amount, expiry_seconds, request_id[:16])
+
+            # Espera confirmación con timeout
+            result = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            return result
+
+        except asyncio.TimeoutError:
+            self._pending_orders.pop(request_id, None)
+            logger.warning("⏱️  Timeout esperando confirmación de PO | req=%s", request_id[:16])
+            # Aún reportamos como colocada (PO puede ejecutarla sin confirmar)
+            return {"order_id": request_id, "status": "placed_unconfirmed"}
+
+        except Exception as e:
+            self._pending_orders.pop(request_id, None)
+            logger.error("❌ Error al colocar orden: %s", e)
+            return {"order_id": None, "status": "error", "reason": str(e)}
 
     # ── Heartbeat con jitter ──────────────────────────────────────────────────
 
