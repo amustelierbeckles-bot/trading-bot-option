@@ -4198,19 +4198,28 @@ async def _verify_signal_result(signal: dict, entry_time: datetime,
         return None
 
     try:
-        provider    = get_provider()
         close_price = None
-        confidence  = "high"   # "high" = dato real, "low" = simulado
+        confidence  = "high"
 
-        # ── Precio fresco con bypass de caché ─────────────────────────────────
-        # Esto resuelve el bug anterior donde get_cached_price() retornaba el
-        # mismo precio de entrada porque el caché (TTL=300s) aún no había expirado
-        # a los 125s de espera. Ahora siempre pedimos la vela cerrada real.
-        if provider and provider.is_configured:
-            close_price = await provider.get_price_for_audit(symbol)
+        # ── Prioridad 1: PO WebSocket (precio real de PO, sin gastar créditos API) ──
+        try:
+            from po_websocket import get_po_provider
+            po = get_po_provider()
+            if po and po.is_connected:
+                po_price = po.get_cached_price(symbol)
+                if po_price and po_price > 0:
+                    close_price = po_price
+                    logger.info("📡 Precio auditoría desde PO WebSocket | %s = %.5f", symbol, close_price)
+        except Exception:
+            pass
+
+        # ── Prioridad 2: Twelve Data (solo si PO no disponible) ──────────────────
+        if close_price is None:
+            provider = get_provider()
+            if provider and provider.is_configured:
+                close_price = await provider.get_price_for_audit(symbol)
 
         if close_price is None:
-            # Sin precio real → no marcar como pérdida (evita falsos [L] en Telegram)
             confidence  = "low"
             logger.warning("⚠️  Auditoría %s — sin precio real, resultado omitido", symbol)
             return None
@@ -4604,12 +4613,25 @@ async def _verify_every_signal(signal_id: str, signal: dict, app) -> None:
         return
 
     try:
-        provider    = get_provider()
         close_price = None
         confidence  = "high"
 
-        if provider and provider.is_configured:
-            close_price = await provider.get_price_for_audit(symbol)
+        # ── Prioridad 1: PO WebSocket (precio exacto de PO, sin consumir créditos) ─
+        try:
+            from po_websocket import get_po_provider
+            po = get_po_provider()
+            if po and po.is_connected:
+                po_price = po.get_cached_price(symbol)
+                if po_price and po_price > 0:
+                    close_price = po_price
+        except Exception:
+            pass
+
+        # ── Prioridad 2: Twelve Data como fallback ────────────────────────────────
+        if close_price is None:
+            provider = get_provider()
+            if provider and provider.is_configured:
+                close_price = await provider.get_price_for_audit(symbol)
 
         if close_price is None:
             logger.warning("⚠️  _verify_every_signal %s — sin precio real, omitido", symbol)
