@@ -813,12 +813,40 @@ async def lifespan(app: FastAPI):
     app.state.ensemble = MultiStrategyEnsemble(list(app.state.strategies.values()))
     logger.info("✅ %d estrategias cargadas", len(app.state.strategies))
 
+    # ── Email Service + APScheduler ───────────────────────────────────────────
+    app.state.email_service = None
+    if app.state.use_mongo:
+        try:
+            from services.email_service import EmailService
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from zoneinfo import ZoneInfo
+
+            email_svc = EmailService(app.state.db)
+            app.state.email_service = email_svc
+
+            scheduler = AsyncIOScheduler(timezone=ZoneInfo("America/Havana"))
+            scheduler.add_job(
+                email_svc.send_daily_report,
+                trigger="cron",
+                hour=10,
+                minute=0,
+                id="daily_report",
+            )
+            scheduler.start()
+            app.state.scheduler = scheduler
+            logger.info("📧 Email scheduler iniciado — reporte diario a las 10:00 AM UTC-4")
+        except Exception as email_err:
+            logger.warning("⚠️  Email service no disponible: %s", email_err)
+            app.state.scheduler = None
+    else:
+        app.state.scheduler = None
+
     # ── Auto-scan en background ───────────────────────────────────────────────
     scan_task    = asyncio.create_task(_auto_scan_loop(app))
     polling_task = asyncio.create_task(_telegram_polling_loop(app))
-    
+
     yield
-    
+
     for task in (scan_task, polling_task):
         task.cancel()
         try:
@@ -827,6 +855,8 @@ async def lifespan(app: FastAPI):
             pass
 
     logger.info("🛑 Apagando servidor...")
+    if getattr(app.state, "scheduler", None):
+        app.state.scheduler.shutdown(wait=False)
     await provider.stop()
     if getattr(app.state, "po_provider", None):
         await app.state.po_provider.stop()
@@ -1738,13 +1768,14 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Ke
 
 async def optional_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Optional API key verification for less sensitive endpoints."""
-    if not API_KEY:
+    current_key = os.getenv("API_SECRET_KEY", None)
+    if not current_key:
         return True
     if not x_api_key:
         return False
-    
+
     import hmac
-    return hmac.compare_digest(x_api_key, API_KEY)
+    return hmac.compare_digest(x_api_key, current_key)
 
 # ============================================================================
 # ENDPOINTS
@@ -1758,6 +1789,24 @@ async def root():
         "status": "online",
         "strategies": len(app.state.strategies)
     }
+
+@app.post("/api/admin/test-email")
+async def test_email(
+    request: Request,
+    _: bool = Depends(verify_api_key),
+):
+    """Envía un email de prueba con los datos reales de las últimas 24h."""
+    email_svc = getattr(request.app.state, "email_service", None)
+    if not email_svc:
+        raise HTTPException(
+            status_code=503,
+            detail="Email service no disponible (MongoDB desconectado o RESEND_API_KEY no configurada)",
+        )
+    result = await email_svc.send_test_email()
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
+    return result
+
 
 @app.get("/api/health")
 async def health_check():

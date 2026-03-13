@@ -8,6 +8,8 @@ aiohttp
 pydantic
 python-telegram-bot
 requests
+resend>=2.0.0
+apscheduler>=3.10.4
 # Testing
 pytest
 pytest-asyncio
