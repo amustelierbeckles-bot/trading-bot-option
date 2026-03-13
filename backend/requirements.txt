@@ -10,6 +10,7 @@ python-telegram-bot
 requests
 resend>=2.0.0
 apscheduler>=3.10.4
+tzdata
 # Testing
 pytest
 pytest-asyncio
