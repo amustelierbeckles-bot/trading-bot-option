@@ -1,0 +1,78 @@
+name: Security Review — Claude
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Eres un auditor de seguridad especializado en bots de trading.
+            Analiza este PR buscando vulnerabilidades críticas para este proyecto.
+
+            ## Contexto del Proyecto
+            - Bot de trading algorítmico en FastAPI + Python
+            - Opera con credenciales de PocketOption (ci_session cookie)
+            - Tokens de Telegram, MongoDB, Redis y Resend expuestos en .env
+            - Desplegado en VPS con Docker, accesible vía Cloudflare
+
+            ## Checks Obligatorios
+
+            ### 🔴 CRÍTICO — Bloquear el PR si se detecta
+            - Credenciales hardcodeadas (API keys, tokens, passwords, ci_session)
+            - API_SECRET_KEY expuesta o verificación `verify_api_key` bypasseada
+            - Circuit breaker desactivado o modificado sin justificación
+            - `time.sleep()` síncrono dentro de funciones `async` (bloquea el event loop)
+            - Llamadas a bases de datos sin manejo de errores
+
+            ### 🟠 ALTO — Comentar con recomendación de corrección
+            - Variables sensibles fuera de `os.getenv()`
+            - Endpoints nuevos sin autenticación
+            - Logs que exponen datos de usuario o claves parciales
+            - Dependencias nuevas en requirements.txt sin justificación
+            - CORS origins modificados a valores permisivos (`*`)
+
+            ### 🟡 MEDIO — Comentar como sugerencia
+            - `datetime.utcnow()` deprecated (usar `datetime.now(UTC)`)
+            - Falta de validación de inputs en endpoints nuevos
+            - Comentarios que revelan lógica de negocio sensible
+            - Tests ausentes para código nuevo crítico
+
+            ## Formato de Reporte
+            Para cada hallazgo usa inline comments en el código afectado.
+            Al final, posta un resumen con este formato:
+
+            ```
+            ## 🔒 Reporte de Seguridad
+
+            | Severidad | Hallazgos |
+            |---|---|
+            | 🔴 CRÍTICO | N |
+            | 🟠 ALTO    | N |
+            | 🟡 MEDIO   | N |
+
+            **Veredicto:** ✅ PR seguro / ⚠️ Requiere correcciones / 🚫 Bloquear
+            ```
+
+            Si hay hallazgos CRÍTICOS, añade al final:
+            `> 🚫 Este PR no debe mergearse hasta resolver los hallazgos críticos.`
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
