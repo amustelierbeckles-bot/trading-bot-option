@@ -1,0 +1,43 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: python
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Deploy a producción solo cuando se aprueba un Release PR
+      - name: Deploy to VPS on release
+        if: ${{ steps.release.outputs.release_created }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/trading-bot
+            git fetch origin main
+            git reset --hard origin/main
+            docker build -t trading-bot-api-img ./backend
+            docker stop trading-bot-api || true
+            docker rm trading-bot-api || true
+            docker run -d --name trading-bot-api \
+              --restart unless-stopped \
+              --env-file /opt/trading-bot/.env.production \
+              --network trading-bot-trading-network \
+              -p 8000:8000 \
+              trading-bot-api-img
+            echo "Deploy v${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}.${{ steps.release.outputs.patch }} completado"

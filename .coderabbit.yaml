@@ -1,0 +1,52 @@
+# CodeRabbit Configuration — Pocket Option Trading Bot
+# Documentación: https://docs.coderabbit.ai/
+
+language: "es"
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  path_instructions:
+    - path: "backend/server.py"
+      instructions: |
+        Este es el archivo principal del bot de trading. Prioridades de revisión:
+        1. Nunca desactivar el circuit_breaker
+        2. Toda variable sensible debe venir de os.getenv(), nunca hardcodeada
+        3. Endpoints protegidos deben usar verify_api_key como dependency
+        4. Usar asyncio.sleep() — nunca time.sleep() (bloquea el event loop)
+        5. Logs en español, código en inglés
+
+    - path: "backend/services/**.py"
+      instructions: |
+        Servicios del backend. Verificar:
+        1. Manejo de errores con try/except y log apropiado
+        2. No hacer llamadas síncronas a APIs externas dentro de funciones async
+        3. Resend API key nunca debe aparecer en texto plano
+
+    - path: "frontend/src/**.js"
+      instructions: |
+        Componentes React del dashboard de trading. Verificar:
+        1. Componentes funcionales con hooks — no clases
+        2. No hardcodear URLs de API — usar process.env.REACT_APP_API_URL
+        3. Limpiar subscripciones/intervals en useEffect cleanup
+
+    - path: "backend/tests/**.py"
+      instructions: |
+        Tests de pytest. Verificar que cubran:
+        1. Status codes de endpoints
+        2. Autenticación (verify_api_key)
+        3. Circuit breaker logic
+
+  tools:
+    github-checks:
+      enabled: true
+    ast-grep:
+      enabled: true
+
+chat:
+  auto_reply: true
