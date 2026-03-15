@@ -288,3 +288,24 @@ FASE 2      → Registro universal de señales + panel comparativo en dashboard
 | `security-best-practices` | CORS, auth, vulnerabilidades |
 
 **Memoria persistente:** Engram MCP activo — recuperar contexto con `mem_context pocket-option-bot` al iniciar sesión.
+
+---
+
+## 🤝 Agent Teams Lite
+
+> Orquestación multi-agente para tareas complejas.
+> El orquestador coordina — los subagentes ejecutan.
+
+**Orquestador:** `.agents/teams/orchestrator.md`
+
+| Subagente | Rol |
+|---|---|
+| `explorer.md` | Análisis de impacto antes de actuar |
+| `backend-dev.md` | Implementación FastAPI / Python |
+| `frontend-dev.md` | Implementación React / dashboard |
+| `tester.md` | Tests pytest / React Testing Library |
+| `deploy-agent.md` | Docker + VPS + GitHub Actions |
+| `analyst.md` | Métricas de señales y win rate |
+
+**Activación:** `/team-new <descripción de tarea>` para flujo completo.
+**SDD (features grandes):** `/sdd-new <feature>` para pipeline Explorer→Spec→Design→Tasks→Apply→Verify.
