@@ -316,7 +316,7 @@ class EmailService:
             now_local = datetime.now(TZ_LOCAL).strftime("%d/%m/%Y")
 
             resend.Emails.send({
-                "from": "Trading Bot <noreply@tradingbot.com>",
+                "from": "Trading Bot <onboarding@resend.dev>",
                 "to": [recipient],
                 "subject": f"📊 Reporte Diario — {now_local} | WR: {data['global_win_rate']:.1f}% | {data['total_signals']} señales",
                 "html": html,
@@ -339,7 +339,7 @@ class EmailService:
             html = _build_html(data)
 
             resend.Emails.send({
-                "from": "Trading Bot <noreply@tradingbot.com>",
+                "from": "Trading Bot <onboarding@resend.dev>",
                 "to": [target],
                 "subject": f"🧪 [TEST] Reporte Trading Bot — {datetime.now(TZ_LOCAL).strftime('%d/%m/%Y %H:%M')}",
                 "html": html,
