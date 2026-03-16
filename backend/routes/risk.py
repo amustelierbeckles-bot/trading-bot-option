@@ -23,7 +23,7 @@ from antifragile import (
     soft_martingale_next_bet,
 )
 from calibration import get_dynamic_threshold, set_dynamic_threshold, compute_optimal_threshold
-from models import RiskStatusRequest
+from schemas import RiskStatusRequest
 
 router = APIRouter()
 

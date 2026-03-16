@@ -19,7 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from models import SignalScanRequest, BacktestRequest
+from schemas import SignalScanRequest, BacktestRequest
 from assets import get_asset_name, get_asset_price, ASSET_PRICES
 from scoring import quality_score as _quality_score
 from calibration import get_dynamic_threshold

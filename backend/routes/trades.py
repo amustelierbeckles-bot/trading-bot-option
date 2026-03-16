@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from bson import ObjectId
 
-from models import TradeResultModel
+from schemas import TradeResultModel
 
 router = APIRouter()
 
