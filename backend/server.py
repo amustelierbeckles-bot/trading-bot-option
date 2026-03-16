@@ -1101,28 +1101,37 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             return
 
         # ── Gate 2: Verificar Win Rate mínimo ─────────────────────────────────
-        auto_min_wr = float(os.getenv("AUTO_EXECUTE_MIN_WR", "55.0"))
+        auto_min_wr  = float(os.getenv("AUTO_EXECUTE_MIN_WR", "55.0"))
+        auto_min_ops = int(os.getenv("AUTO_EXECUTE_MIN_OPS", "20"))
+
         if app.state.use_mongo:
-            cursor = app.state.db.trades.find({
-                "result":           {"$in": ["win", "loss"]},
-                "audit_confidence": "high",
-            }).sort("created_at", -1).limit(20)
-            recent = await cursor.to_list(20)
+            cursor = app.state.db.signals.find({
+                "result":           {"$in": ["W", "L", "win", "loss"]},
+                "execution_mode":   "auto",
+            }).sort("created_at", -1).limit(auto_min_ops)
+            recent = await cursor.to_list(auto_min_ops)
         else:
             recent = [
                 t for t in app.state.trades_store
-                if t.get("result") in ("win", "loss")
-                and t.get("audit_confidence", "high") == "high"
-            ][-20:]
+                if t.get("result") in ("W", "L", "win", "loss")
+                and t.get("execution_mode") == "auto"
+            ][-auto_min_ops:]
 
-        if len(recent) >= 20:
-            wr_recent = sum(1 for t in recent if t.get("result") == "win") / len(recent) * 100
+        # Solo bloquea por WR si ya tenemos suficientes operaciones verificadas
+        if len(recent) >= auto_min_ops:
+            wins = sum(1 for t in recent if t.get("result") in ("W", "win"))
+            wr_recent = wins / len(recent) * 100
             if wr_recent < auto_min_wr:
                 logger.warning(
-                    "🛑 Auto-exec bloqueado — WR reciente %.1f%% < umbral %.1f%%",
-                    wr_recent, auto_min_wr
+                    "🛑 Auto-exec bloqueado — WR reciente %.1f%% < umbral %.1f%% (base: %d ops)",
+                    wr_recent, auto_min_wr, len(recent)
                 )
                 return
+        else:
+            logger.info(
+                "📊 Auto-exec en modo recolección — %d/%d ops verificadas (WR check pendiente)",
+                len(recent), auto_min_ops
+            )
 
         # ── Gate 3: PO WebSocket conectado ────────────────────────────────────
         po = get_po_provider()
