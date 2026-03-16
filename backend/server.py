@@ -1185,17 +1185,60 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             result.get("order_id", "?")[:16], result.get("status", "?")
         )
 
-        # Notifica por Telegram que se auto-ejecutó
-        auto_msg = (
-            f"🤖 *AUTO-EXEC*\n"
-            f"Par: `{doc.get('asset_name', symbol)}`\n"
-            f"Dirección: `{direction.upper()}`\n"
-            f"Monto: `${amount:.0f}`\n"
-            f"Score: `{quality_score*100:.0f}%`\n"
-            f"Orden: `{result.get('order_id','?')[:12]}`\n"
-            f"Estado: `{result.get('status','?')}`"
+        # ── Registra trade en MongoDB para auditoría ──────────────────────────
+        audit_id = None
+        if app and app.state.use_mongo:
+            try:
+                trade_doc = {
+                    "symbol":          symbol,
+                    "asset_name":      doc.get("asset_name", symbol),
+                    "type":            direction.upper(),
+                    "entry_price":     doc.get("entry_price", doc.get("price", 0)),
+                    "quality_score":   quality_score,
+                    "execution_mode":  "auto",
+                    "amount":          amount,
+                    "po_order_id":     result.get("order_id"),
+                    "po_status":       result.get("status"),
+                    "audit_confidence":"high",
+                    "result":          None,
+                    "created_at":      now,
+                    "session":         doc.get("session", ""),
+                    "strategies":      doc.get("strategies_agreeing", []),
+                }
+                ins = await app.state.db.signals.insert_one(trade_doc)
+                audit_id = str(ins.inserted_id)
+                logger.info("📝 Trade auto-exec registrado | audit_id=%s", audit_id)
+            except Exception as e:
+                logger.warning("⚠️  No se pudo registrar trade auto-exec: %s", e)
+
+        # ── Notifica por Telegram ──────────────────────────────────────────────
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        auto_msg_text = (
+            f"🤖 <b>AUTO-EXEC</b>\n\n"
+            f"Par: <b>{doc.get('asset_name', symbol)}</b>\n"
+            f"Dirección: <b>{direction.upper()}</b>\n"
+            f"Monto: <b>${amount:.0f}</b>\n"
+            f"Score: <b>{quality_score*100:.0f}%</b>\n"
+            f"Orden: <code>{result.get('order_id','?')[:12]}</code>\n"
+            f"Estado: <code>{result.get('status','?')}</code>\n\n"
+            f"⏰ Verificando resultado en 2 minutos automáticamente..."
         )
-        await _send_telegram(auto_msg)
+        if token and chat_id:
+            tg_result = await _tg_api("sendMessage", {
+                "chat_id":    chat_id,
+                "text":       auto_msg_text,
+                "parse_mode": "HTML",
+            })
+            auto_msg_id = tg_result.get("result", {}).get("message_id")
+
+            # ── Lanza auditoría autónoma para el trade auto-ejecutado ──────────
+            if audit_id and auto_msg_id and app:
+                asyncio.create_task(_autonomous_audit(
+                    chat_id, auto_msg_id, doc, now, audit_id, app
+                ))
+                logger.info("🔄 Auditoría autónoma lanzada para auto-exec | %s %s",
+                            direction.upper(), symbol)
 
     except Exception as e:
         logger.error("❌ Error en auto-exec: %s", e)
