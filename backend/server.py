@@ -235,7 +235,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"]       = "1; mode=block"
         response.headers["Referrer-Policy"]        = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"]     = "geolocation=(), microphone=(), camera=()"
-        response.headers.pop("Server", None)
+        try:
+            del response.headers["Server"]
+        except KeyError:
+            pass
         return response
 
 
