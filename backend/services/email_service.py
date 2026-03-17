@@ -202,7 +202,7 @@ class EmailService:
 
     async def _aggregate_signals(self) -> dict:
         since = datetime.utcnow() - timedelta(hours=24)
-        cursor = self.db.signals.find({"timestamp": {"$gte": since}})
+        cursor = self.db.signals.find({"created_at": {"$gte": since}})
         signals = await cursor.to_list(length=2000)
 
         total = len(signals)
