@@ -51,6 +51,27 @@ El conocimiento acumulado que no se guarda no existe.
 
 ---
 
+## REGLA DE SELECCIÓN DE MODELOS — Obligatoria en cada tarea
+
+Aplicar siempre el modelo más económico que pueda resolver la tarea correctamente.
+Impacto estimado: reducción del ~60-70% de consumo de tokens en tareas rutinarias.
+
+| Tipo de tarea                        | Modelo            |
+|--------------------------------------|-------------------|
+| Editar archivo conocido              | Kimi K2.5         |
+| Escribir tests                       | Kimi K2.5         |
+| Leer y analizar archivos (server.py) | Gemini 3 Pro      |
+| Resolver bug                         | Composer 1.5      |
+| Arquitectura / decisiones            | Sonnet 4.6        |
+| Refactorización compleja             | Sonnet 4.6        |
+
+### Regla de oro:
+Usar Sonnet 4.6 SOLO cuando la tarea requiere razonamiento complejo,
+decisiones arquitectónicas o refactorización con múltiples dependencias.
+Para todo lo demás → modelo más ligero.
+
+---
+
 ## PROTOCOLO DE VERIFICACIÓN OBLIGATORIA
 
 ### Antes de declarar cualquier tarea como resuelta:
