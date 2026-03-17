@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "skills": {
+    "api-design-principles": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "b242f962d5f78bf8bc147e92f2aa0341459b9f5f2f955e9867a8c41b85f22648"
+    },
+    "architecture-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "baa0be9b01540d612be90820e654dccd2e41877f57e65ef1dc51a5387c5eecb9"
+    },
+    "code-review": {
+      "source": "supercent-io/skills-template",
+      "sourceType": "github",
+      "computedHash": "199d2fcf315d17a4d6d96a0db7553f11a33ac291a861f93ba0ef5dd9fe1d67bf"
+    },
+    "data-analysis": {
+      "source": "supercent-io/skills-template",
+      "sourceType": "github",
+      "computedHash": "90b275a94a958572c096858fb9e877f9257d26f2888e6714fc99901797839900"
+    },
+    "database-schema-design": {
+      "source": "supercent-io/skills-template",
+      "sourceType": "github",
+      "computedHash": "4c33e1db0dbbe6f7c4c99a8a4d38b695d8bc417bcad3f18a34543c8d9bceb79d"
+    },
+    "monitoring-observability": {
+      "source": "supercent-io/skills-template",
+      "sourceType": "github",
+      "computedHash": "3ef1ac3fc38698642694c6de5e648c45908b1451e48f77de67c841679746b28d"
+    },
+    "python-performance-optimization": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "5a0b73f9cf738b980678fe98fbc9f9549320258fe097226de87b3afbf31f03fd"
+    },
+    "security-best-practices": {
+      "source": "supercent-io/skills-template",
+      "sourceType": "github",
+      "computedHash": "c5ddd50338549d28b2edd45cec131d6a231349b0671a093b3b7e3b51d4780ab8"
+    }
+  }
+}

@@ -1,4 +1,24 @@
-# PROTOCOLO DE INTEGRIDAD TÉCNICA — Prohibición Absoluta de Falsos Positivos
+# ⚡ DECLARACIÓN OBLIGATORIA DE INICIO — Se ejecuta ANTES de cualquier tarea
+
+Antes de escribir UNA SOLA línea de código, el agente 
+DEBE declarar en el chat:
+
+"Modelo seleccionado: [X]
+Razón: [tipo de tarea según la tabla de modelos]"
+
+Si usa Sonnet 4.6 para algo que no requiere arquitectura 
+o refactorización compleja → el usuario tiene derecho a 
+detener la tarea y reiniciarla con el modelo correcto.
+
+Sin esta declaración → la tarea no ha comenzado.
+Esta regla no tiene excepciones, incluso si los bugs 
+están entrelazados entre múltiples archivos.
+Bugs entrelazados = Gemini 2.5 Pro para análisis 
+                  + Composer 1.5 para los fixes
+                  + Sonnet 4.6 solo si hay decisión 
+                    arquitectónica real al final.
+
+---# PROTOCOLO DE INTEGRIDAD TÉCNICA — Prohibición Absoluta de Falsos Positivos
 
 ## El Problema que Este Protocolo Resuelve
 Declarar una tarea como "resuelta" cuando no ha sido verificada 
