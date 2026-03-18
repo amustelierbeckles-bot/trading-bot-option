@@ -645,6 +645,40 @@ class POWebSocketProvider:
 
     # ── API pública para el bot ───────────────────────────────────────────────
 
+    def seed_from_candles(self, otc_symbol: str, candles: list) -> int:
+        """
+        Siembra el buffer con velas históricas (CandleData de TwelveData).
+        Se llama UNA sola vez al inicio por par para evitar el warmup de 30 min.
+        Retorna el número de velas agregadas.
+        """
+        buf = self._buffers.get(otc_symbol)
+        if not buf:
+            return 0
+        added = 0
+        for c in candles:
+            try:
+                ts     = datetime.strptime(c.time, "%Y-%m-%d %H:%M:%S").timestamp()
+                minute = int(ts // 60) * 60
+                if buf.candles and buf.candles[-1]["time"] == minute:
+                    buf.candles[-1]["close"] = c.close
+                    buf.candles[-1]["high"]  = max(buf.candles[-1]["high"], c.high)
+                    buf.candles[-1]["low"]   = min(buf.candles[-1]["low"],  c.low)
+                else:
+                    buf.candles.append({
+                        "time":  minute,
+                        "open":  c.open,
+                        "high":  c.high,
+                        "low":   c.low,
+                        "close": c.close,
+                    })
+                    added += 1
+            except Exception:
+                pass
+        if added:
+            buf.last_price  = candles[-1].close if candles else buf.last_price
+            buf.last_update = time.time()
+        return added
+
     def get_cached_price(self, otc_symbol: str) -> Optional[float]:
         """Retorna el último precio conocido del par (válido si tiene < 60s)."""
         return self.get_latest_price(otc_symbol, max_age_seconds=60)

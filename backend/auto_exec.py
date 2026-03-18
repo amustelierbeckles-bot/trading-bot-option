@@ -296,14 +296,80 @@ async def _auto_scan_loop(app):
 
             fetch_start = datetime.utcnow()
             provider    = get_provider()
+            po_prov     = getattr(app.state, "po_provider", None)
 
-            if provider and provider.is_configured:
-                indicators_map = await provider.get_indicators_batch(pairs_to_scan)
-            else:
-                indicators_map = {sym: get_simulated_indicators(sym) for sym in pairs_to_scan}
+            # ── Bootstrap único por sesión ────────────────────────────────────
+            # Siembra los buffers de PO con 35 velas históricas de TwelveData
+            # UNA sola vez por par. Después, el buffer se mantiene vivo con ticks
+            # y nunca vuelve a necesitar TwelveData para indicadores.
+            if po_prov and provider and provider.is_configured:
+                from data_provider import CandleData as _CD
+                needs_boot = [
+                    sym for sym in pairs_to_scan
+                    if not po_prov.is_ready(sym)
+                    and not getattr(app.state, "_po_bootstrapped", set()).issuperset({sym})
+                ]
+                if needs_boot:
+                    if not hasattr(app.state, "_po_bootstrapped"):
+                        app.state._po_bootstrapped = set()
+                    logger.info("🌱 Bootstrap PO buffer | %d pares sin datos", len(needs_boot))
+                    boot_sem = asyncio.Semaphore(2)
+
+                    async def _boot_one(sym: str):
+                        async with boot_sem:
+                            await asyncio.sleep(0.5)
+                            ind = await provider.get_indicators(sym)
+                            if ind and ind.candles:
+                                added = po_prov.seed_from_candles(sym, ind.candles)
+                                app.state._po_bootstrapped.add(sym)
+                                logger.info("🌱 %s sembrado con %d velas", sym, added)
+
+                    boot_tasks = [asyncio.create_task(_boot_one(s)) for s in needs_boot]
+                    await asyncio.gather(*boot_tasks, return_exceptions=True)
+
+            # ── Fuente de indicadores: PO WebSocket (sin depender de is_connected)
+            # Los buffers persisten entre reconexiones — si hay datos, se usan.
+            indicators_map: dict = {}
+            po_ready = 0
+
+            if po_prov and not po_prov._kill_switch_active:
+                from data_provider import CandleData, IndicatorSet
+                for sym in pairs_to_scan:
+                    if not po_prov.is_ready(sym):
+                        continue
+                    candles_raw = po_prov.get_candles(sym)
+                    if not candles_raw:
+                        continue
+                    candles = [
+                        CandleData(
+                            time  = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d %H:%M:%S"),
+                            open  = c["open"],
+                            high  = c["high"],
+                            low   = c["low"],
+                            close = c["close"],
+                        )
+                        for c in candles_raw
+                    ]
+                    ind = IndicatorSet()
+                    ind.compute(candles)
+                    ind.last_candle_time = candles[-1].time if candles else ""
+                    indicators_map[sym]  = ind
+                    po_ready += 1
 
             fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
-            logger.info("⚡ Fetch paralelo %.1fs para %d pares", fetch_elapsed, len(pairs_to_scan))
+            td_fallback   = len(pairs_to_scan) - po_ready
+
+            if po_prov and not po_prov._kill_switch_active:
+                logger.info(
+                    "⚡ PO WebSocket %d/%d pares | TwelveData fallback %d pares | %.1fs",
+                    po_ready, len(pairs_to_scan), td_fallback, fetch_elapsed,
+                )
+            else:
+                if provider and provider.is_configured:
+                    indicators_map = await provider.get_indicators_batch(pairs_to_scan)
+                else:
+                    indicators_map = {sym: get_simulated_indicators(sym) for sym in pairs_to_scan}
+                logger.info("⚡ Fetch paralelo %.1fs para %d pares", fetch_elapsed, len(pairs_to_scan))
 
             real_count      = sum(1 for s in pairs_to_scan if indicators_map.get(s) and indicators_map[s].is_real)
             simulated_count = len(pairs_to_scan) - real_count
