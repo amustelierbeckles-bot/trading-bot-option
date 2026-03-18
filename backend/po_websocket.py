@@ -263,11 +263,17 @@ class POWebSocketProvider:
 
             logger.info("✅ POWebSocket conectado a events-po.com")
 
-            # Lanza tasks paralelas
-            await asyncio.gather(
-                self._message_handler(ws),
-                self._heartbeat_loop(ws),
-            )
+            try:
+                # Lanza tasks paralelas
+                await asyncio.gather(
+                    self._message_handler(ws),
+                    self._heartbeat_loop(ws),
+                )
+            finally:
+                # El servidor cerró la conexión (timeout normal) — marcar desconectado
+                # para que los logs reflejen el estado real durante el warmup
+                self.is_connected = False
+                self.status       = "connecting"
 
     # ── Handshake y autenticación ─────────────────────────────────────────────
 
@@ -640,11 +646,18 @@ class POWebSocketProvider:
     # ── API pública para el bot ───────────────────────────────────────────────
 
     def get_cached_price(self, otc_symbol: str) -> Optional[float]:
-        """Retorna el último precio conocido del par."""
+        """Retorna el último precio conocido del par (válido si tiene < 60s)."""
+        return self.get_latest_price(otc_symbol, max_age_seconds=60)
+
+    def get_latest_price(self, otc_symbol: str, max_age_seconds: int = 180) -> Optional[float]:
+        """
+        Retorna el último precio conocido del par con tolerancia de edad configurable.
+        Diseñado para auditoría: acepta precios hasta max_age_seconds de antigüedad.
+        Útil cuando el WebSocket se reconecta brevemente durante la ventana de verificación.
+        """
         buf = self._buffers.get(otc_symbol)
         if buf and buf.last_price > 0:
-            # Precio válido si tiene menos de 60s
-            if time.time() - buf.last_update < 60:
+            if time.time() - buf.last_update < max_age_seconds:
                 return buf.last_price
         return None
 
