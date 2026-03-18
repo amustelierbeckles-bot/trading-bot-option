@@ -71,24 +71,33 @@ El conocimiento acumulado que no se guarda no existe.
 
 ---
 
-## REGLA DE SELECCIÓN DE MODELOS — Obligatoria en cada tarea
+## REGLA DE SELECCIÓN DE MODELOS — Cómo funciona
 
-Aplicar siempre el modelo más económico que pueda resolver la tarea correctamente.
-Impacto estimado: reducción del ~60-70% de consumo de tokens en tareas rutinarias.
+El agente NO puede cambiar su propio modelo durante un chat.
+El modelo lo selecciona el USUARIO al abrir el chat en Cursor.
 
-| Tipo de tarea                        | Modelo            |
-|--------------------------------------|-------------------|
-| Editar archivo conocido              | Kimi K2.5         |
-| Escribir tests                       | Kimi K2.5         |
-| Leer y analizar archivos (server.py) | Gemini 3 Pro      |
-| Resolver bug                         | Composer 1.5      |
-| Arquitectura / decisiones            | Sonnet 4.6        |
-| Refactorización compleja             | Sonnet 4.6        |
+### Lo que hace el agente — OBLIGATORIO en la PRIMERA respuesta de cada chat:
+```
+Modelo activo: [nombre del modelo actual]
+Modelo recomendado: [nombre según tipo de tarea]
+→ [Si no coinciden]: Considera cerrar y reabrir con [modelo correcto]
+```
+Nunca omitir esta declaración. El usuario no tiene que preguntar.
+
+### Lo que hace el usuario — antes de abrir un chat nuevo:
+
+| Tipo de tarea                         | Modelo a seleccionar |
+|---------------------------------------|----------------------|
+| Editar archivo conocido               | Kimi K2.5            |
+| Escribir tests                        | Kimi K2.5            |
+| Leer y analizar código                | Gemini 2.5 Pro       |
+| Resolver bug conocido                 | Composer 1.5         |
+| Arquitectura / decisiones complejas   | Sonnet 4.6           |
+| Bug complejo con múltiples archivos   | Sonnet 4.6           |
 
 ### Regla de oro:
-Usar Sonnet 4.6 SOLO cuando la tarea requiere razonamiento complejo,
-decisiones arquitectónicas o refactorización con múltiples dependencias.
-Para todo lo demás → modelo más ligero.
+Sonnet 4.6 SOLO para razonamiento complejo o decisiones arquitectónicas.
+Para todo lo demás → modelo más ligero = ~60-70% menos tokens.
 
 ---
 
