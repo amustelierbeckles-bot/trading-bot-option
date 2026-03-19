@@ -25,6 +25,7 @@ async def mae_sampling_loop(symbol: str, signal_type: str, entry_price: float,
     """
     from data_provider import get_provider
     from assets import get_asset_price
+    from po_websocket import get_po_provider
 
     provider  = get_provider()
     worst_mae = 0.0
@@ -36,8 +37,14 @@ async def mae_sampling_loop(symbol: str, signal_type: str, entry_price: float,
         elapsed += interval_sec
         try:
             price = None
-            if provider and provider.is_configured:
+            # Prioridad 1: PO WebSocket (0 créditos API)
+            po_prov = get_po_provider()
+            if po_prov and po_prov.is_connected:
+                price = po_prov.get_cached_price(symbol)
+            # Prioridad 2: Twelve Data
+            if price is None and provider and provider.is_configured:
                 price = await provider.get_price_sample(symbol)
+            # Prioridad 3: precio estático del asset
             if price is None:
                 price = get_asset_price(symbol)
             samples.append(price)
@@ -162,8 +169,8 @@ async def verify_signal_result(signal: dict, entry_time: datetime,
         try:
             from po_websocket import get_po_provider
             po = get_po_provider()
-            if po and po.is_connected:
-                po_price = po.get_cached_price(symbol)
+            if po and not po._kill_switch_active:
+                po_price = po.get_latest_price(symbol, max_age_seconds=180)
                 if po_price and po_price > 0:
                     close_price = po_price
                     logger.info("📡 Precio auditoría desde PO WS | %s = %.5f", symbol, close_price)
@@ -281,8 +288,8 @@ async def verify_every_signal(signal_id: str, signal: dict, app) -> None:
         try:
             from po_websocket import get_po_provider
             po = get_po_provider()
-            if po and po.is_connected:
-                po_price = po.get_cached_price(symbol)
+            if po and not po._kill_switch_active:
+                po_price = po.get_latest_price(symbol, max_age_seconds=180)
                 if po_price and po_price > 0:
                     close_price = po_price
         except Exception:
