@@ -161,6 +161,10 @@ class POWebSocketProvider:
         # Órdenes pendientes: request_id → asyncio.Future
         self._pending_orders: Dict[str, asyncio.Future] = {}
 
+        # Alerta expiración PO_SSID
+        self._ssid_configured_at: float = 0.0
+        self._ssid_alert_sent: bool = False
+
     # ── Configuración ─────────────────────────────────────────────────────────
 
     def configure(self, ssid: str, secret: str = "", user_id: int = 0,
@@ -173,6 +177,8 @@ class POWebSocketProvider:
         """
         global WS_URL
         self._ssid       = ssid
+        self._ssid_configured_at = time.time()
+        self._ssid_alert_sent    = False
         self._secret     = secret
         self._user_id    = user_id
         self._full_cookie = full_cookie
@@ -437,6 +443,11 @@ class POWebSocketProvider:
         # Error de autenticación
         if event in ("notauthorized", "error"):
             logger.warning("🔴 Error de auth PO: %s", data)
+            from services.telegram_service import send_telegram
+            asyncio.create_task(send_telegram(
+                "🔴 PO_SSID rechazado por PocketOption\n"
+                "El bot perdió conexión. Actualiza ci_session en .env y reinicia."
+            ))
             self._activate_kill_switch()
             return
 
@@ -609,12 +620,31 @@ class POWebSocketProvider:
 
     async def _heartbeat_loop(self, ws):
         """Envía ping-server con variación aleatoria (no robótico)."""
+        _last_ssid_check = 0.0
+        SSID_CHECK_INTERVAL = 3600.0  # 1 hora
+        SSID_EXPIRY_DAYS = 28
+
         while True:
             # Intervalo con jitter: 25s ± 3s aleatorio
             interval = PING_INTERVAL + random.uniform(-PING_JITTER, PING_JITTER)
             await asyncio.sleep(interval)
 
             try:
+                # Check expiración SSID cada hora
+                now = time.time()
+                if now - _last_ssid_check >= SSID_CHECK_INTERVAL:
+                    _last_ssid_check = now
+                    if (self._ssid_configured_at > 0
+                            and not self._ssid_alert_sent
+                            and (now - self._ssid_configured_at) >= SSID_EXPIRY_DAYS * 86400):
+                        self._ssid_alert_sent = True
+                        from services.telegram_service import send_telegram
+                        asyncio.create_task(send_telegram(
+                            "⚠️ PO_SSID expira pronto\n"
+                            "Han pasado 28 días desde la última configuración.\n"
+                            "Renueva ci_session en .env y reinicia el bot."
+                        ))
+
                 ping_msg = json.dumps(["ping-server"])
                 await ws.send(f"42{ping_msg}")
                 logger.debug("💓 Heartbeat enviado (%.1fs)", interval)

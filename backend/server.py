@@ -165,11 +165,11 @@ async def lifespan(app: FastAPI):
             scheduler = AsyncIOScheduler(timezone=ZoneInfo("America/Havana"))
             scheduler.add_job(
                 email_svc.send_daily_report,
-                trigger="cron", hour=10, minute=0, id="daily_report",
+                trigger="cron", hour=23, minute=0, id="daily_report",
             )
             scheduler.start()
             app.state.scheduler = scheduler
-            logger.info("📧 Email scheduler iniciado — reporte diario 10:00 AM")
+            logger.info("📧 Email scheduler iniciado — reporte diario 11:00 PM")
         except Exception as email_err:
             logger.warning("⚠️  Email service no disponible: %s", email_err)
 
