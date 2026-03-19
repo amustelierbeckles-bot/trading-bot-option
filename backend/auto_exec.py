@@ -10,6 +10,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+_last_wr_blocked: bool = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +29,7 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
     from services.audit_service import autonomous_audit
     from services.telegram_service import tg_api
 
+    global _last_wr_blocked
     try:
         if cb_is_blocked():
             logger.warning("🛑 Auto-exec bloqueado — Circuit Breaker activo")
@@ -56,7 +59,24 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
                     "🛑 Auto-exec bloqueado — WR %.1f%% < umbral %.1f%% (%d ops)",
                     wr_recent, auto_min_wr, len(recent)
                 )
+                if not _last_wr_blocked:
+                    _last_wr_blocked = True
+                    from services.telegram_service import send_telegram
+                    asyncio.create_task(send_telegram(
+                        f"🟡 AUTO-EXECUTE bloqueado\n"
+                        f"WR reciente: {wr_recent:.1f}% < umbral {auto_min_wr:.1f}%\n"
+                        f"El bot pausó la ejecución automática."
+                    ))
                 return
+            else:
+                if _last_wr_blocked:
+                    _last_wr_blocked = False
+                    from services.telegram_service import send_telegram
+                    asyncio.create_task(send_telegram(
+                        f"🟢 AUTO-EXECUTE DESBLOQUEADO\n"
+                        f"WR reciente: {wr_recent:.1f}% ≥ umbral {auto_min_wr:.1f}%\n"
+                        f"El bot comenzará a ejecutar trades automáticamente."
+                    ))
         else:
             logger.info(
                 "📊 Auto-exec recolección — %d/%d ops verificadas",
