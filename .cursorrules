@@ -71,22 +71,34 @@ El conocimiento acumulado que no se guarda no existe.
 
 ---
 
-## REGLA DE SELECCIÓN DE MODELOS — Cómo funciona
+## ⚡ DECLARACIÓN OBLIGATORIA DE INICIO
 
-El agente NO puede cambiar su propio modelo durante un chat.
-El modelo lo selecciona el USUARIO al abrir el chat en Cursor.
+### Flujo correcto — sin excepciones:
 
-### Lo que hace el agente — OBLIGATORIO en la PRIMERA respuesta de cada chat:
+**PASO 1** — El usuario declara al abrir el chat:
 ```
-Modelo activo: [nombre del modelo actual]
-Modelo recomendado: [nombre según tipo de tarea]
-→ [Si no coinciden]: Considera cerrar y reabrir con [modelo correcto]
+Modelo activo: [X]
 ```
-Nunca omitir esta declaración. El usuario no tiene que preguntar.
 
-### Lo que hace el usuario — antes de abrir un chat nuevo:
+**PASO 2** — El agente recomienda según la tarea:
+```
+Para esta tarea el modelo óptimo es [Y] porque [razón].
+Modelo activo según declaraste: [X]
+[✅ Correcto — continúo | ⚠️ Considera cambiar a [Y]]
+¿Confirmas que continúo con [X]?
+```
 
-| Tipo de tarea                         | Modelo a seleccionar |
+**PASO 3** — El agente espera confirmación antes de ejecutar.
+Sin confirmación → no se ejecuta nada.
+
+### Lo que el agente NUNCA hace:
+❌ Declarar el modelo activo sin que el usuario lo haya dicho
+❌ Ejecutar sin confirmación de modelo
+❌ Inventar información que no puede ver
+
+### Tabla de modelos por tipo de tarea:
+
+| Tipo de tarea                         | Modelo óptimo        |
 |---------------------------------------|----------------------|
 | Editar archivo conocido               | Kimi K2.5            |
 | Escribir tests                        | Kimi K2.5            |
@@ -95,9 +107,7 @@ Nunca omitir esta declaración. El usuario no tiene que preguntar.
 | Arquitectura / decisiones complejas   | Sonnet 4.6           |
 | Bug complejo con múltiples archivos   | Sonnet 4.6           |
 
-### Regla de oro:
-Sonnet 4.6 SOLO para razonamiento complejo o decisiones arquitectónicas.
-Para todo lo demás → modelo más ligero = ~60-70% menos tokens.
+Sonnet 4.6 SOLO para razonamiento complejo. Para todo lo demás → modelo más ligero.
 
 ---
 
