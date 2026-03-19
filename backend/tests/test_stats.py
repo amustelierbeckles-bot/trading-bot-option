@@ -15,7 +15,13 @@ from unittest.mock import AsyncMock, MagicMock
 sys.path.append(str(Path(__file__).parent.parent))
 
 from datetime import datetime
-from server import _hour_bucket, _day_bucket, _wr_cache_get, _wr_cache_set, _wr_cache_invalidate
+from win_rate_cache import (
+    hour_bucket as _hour_bucket,
+    day_bucket as _day_bucket,
+    wr_cache_get as _wr_cache_get,
+    wr_cache_set as _wr_cache_set,
+    wr_cache_invalidate as _wr_cache_invalidate,
+)
 
 
 # ── Buckets de tiempo ─────────────────────────────────────────────────────────
@@ -111,10 +117,10 @@ async def test_wr_cache_redis_error_falls_back_to_memory():
 @pytest.fixture(autouse=True)
 def clear_wr_cache():
     """Limpia el caché in-memory entre tests para evitar interferencias."""
-    import server
-    server._wr_mem_cache.clear()
+    import win_rate_cache
+    win_rate_cache._wr_mem_cache.clear()
     yield
-    server._wr_mem_cache.clear()
+    win_rate_cache._wr_mem_cache.clear()
 
 
 @pytest.mark.asyncio

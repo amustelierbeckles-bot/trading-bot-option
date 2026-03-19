@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from server import _quality_score
+from scoring import quality_score as _quality_score
 
 
 class TestQualityScoreRange:

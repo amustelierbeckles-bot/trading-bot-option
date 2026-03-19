@@ -14,11 +14,10 @@ from datetime import datetime, timedelta
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-import server
-from server import (
-    _get_market_session,
-    _cb_record_result,
-    _cb_is_blocked,
+from market_session import get_market_session as _get_market_session
+from circuit_breaker import (
+    cb_record_result as _cb_record_result,
+    cb_is_blocked as _cb_is_blocked,
     _cb_state,
     CB_CONSECUTIVE_LIMIT,
 )

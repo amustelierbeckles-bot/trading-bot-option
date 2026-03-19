@@ -1,6 +1,6 @@
 import pytest
-from server import (CCIAlligatorStrategy, RangeBreakoutStrategy,
-                    _orthogonal_score, _TOTAL_GROUPS)
+from strategies import CCIAlligatorStrategy, RangeBreakoutStrategy
+from scoring import orthogonal_score as _orthogonal_score, _TOTAL_GROUPS
 
 
 class MockIndicatorSet:

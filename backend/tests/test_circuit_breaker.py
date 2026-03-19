@@ -9,10 +9,9 @@ from datetime import datetime, timedelta
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-import server
-from server import (
-    _cb_is_blocked,
-    _cb_record_result,
+from circuit_breaker import (
+    cb_is_blocked as _cb_is_blocked,
+    cb_record_result as _cb_record_result,
     _cb_state,
     CB_CONSECUTIVE_LIMIT,
 )

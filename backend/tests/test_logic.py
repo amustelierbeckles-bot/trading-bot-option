@@ -5,7 +5,8 @@ from pathlib import Path
 # Asegurar importación
 sys.path.append(str(Path(__file__).parent.parent))
 
-from server import _conf_from_extreme, get_asset_price, TradingStrategy
+from strategies import _conf_from_extreme, TradingStrategy
+from assets import get_asset_price
 
 def test_conf_from_extreme_logic():
     """

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from server import _compute_optimal_threshold, _MIN_TRADES_TO_CALIBRATE
+from calibration import compute_optimal_threshold as _compute_optimal_threshold, _MIN_TRADES_TO_CALIBRATE
 
 
 def _make_trade(result: str, quality_score: float, audit_confidence: str = "high") -> dict:
