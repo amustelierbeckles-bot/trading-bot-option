@@ -112,7 +112,7 @@ async def test_wr_cache_redis_error_falls_back_to_memory():
     assert result["win_rate"] == 60.0
 
 
-# ── Endpoint /v1/stats ────────────────────────────────────────────────────────
+# ── Endpoint /api/stats ───────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def clear_wr_cache():
@@ -127,90 +127,81 @@ def clear_wr_cache():
 async def test_stats_endpoint_empty(client):
     """Con trades_store vacío, debe retornar totales en cero sin error."""
     import server
-    server.app.state.trades_store = []
+    server.app.state.trades_store  = []
+    server.app.state.signals_store = []
 
-    response = client.get("/v1/stats?window=1h")
+    response = client.get("/api/stats")
     assert response.status_code == 200
     data = response.json()
-    assert data["global"]["total"] == 0
-    assert data["global"]["win_rate"] == 0.0
-    assert data["window"] == "1h"
+    assert data["total_trades"] == 0
+    assert data["win_rate"] == 0.0
+    assert data["period"] == "24h"
 
 
 @pytest.mark.asyncio
 async def test_stats_endpoint_with_trades(client):
-    """Con trades reales verificados, debe calcular Win Rate correctamente."""
+    """Con trades reales, debe calcular Win Rate correctamente."""
     import server
-    server.app.state.use_mongo = False   # fuerza in-memory aunque Mongo esté disponible
+    server.app.state.use_mongo = False
 
     now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    server.app.state.signals_store = []
     server.app.state.trades_store = [
-        {"symbol": "OTC_EURUSD", "result": "win",  "audit_confidence": "high",
-         "session": "london", "created_at": now_str, "payout": 85},
-        {"symbol": "OTC_EURUSD", "result": "win",  "audit_confidence": "high",
-         "session": "london", "created_at": now_str, "payout": 85},
-        {"symbol": "OTC_EURUSD", "result": "loss", "audit_confidence": "high",
-         "session": "london", "created_at": now_str, "payout": 85},
-        {"symbol": "OTC_GBPUSD", "result": "win",  "audit_confidence": "high",
-         "session": "newyork", "created_at": now_str, "payout": 85},
+        {"symbol": "OTC_EURUSD", "result": "win",  "created_at": now_str},
+        {"symbol": "OTC_EURUSD", "result": "win",  "created_at": now_str},
+        {"symbol": "OTC_EURUSD", "result": "loss", "created_at": now_str},
+        {"symbol": "OTC_GBPUSD", "result": "win",  "created_at": now_str},
     ]
 
-    response = client.get("/v1/stats?window=1h")
+    response = client.get("/api/stats")
     assert response.status_code == 200
     data = response.json()
 
-    assert data["global"]["total"] == 4
-    assert data["global"]["wins"]  == 3
-    assert data["global"]["win_rate"] == 75.0
-
-    assert "OTC_EURUSD" in data["by_pair"]
-    assert data["by_pair"]["OTC_EURUSD"]["win_rate"] == pytest.approx(66.7, abs=0.1)
-
-    assert "london" in data["by_session"]
-    assert data["by_session"]["london"]["wins"] == 2
+    assert data["wins"]     == 3
+    assert data["losses"]   == 1
+    assert data["win_rate"] == 75.0
 
 
 @pytest.mark.asyncio
-async def test_stats_endpoint_filters_low_confidence(client):
-    """Trades con audit_confidence='low' (datos simulados) NO deben sumarse al Win Rate."""
+async def test_stats_endpoint_returns_required_keys(client):
+    """El endpoint debe devolver todas las claves esperadas."""
+    import server
+    server.app.state.trades_store  = []
+    server.app.state.signals_store = []
+
+    response = client.get("/api/stats")
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("period", "total_signals", "total_trades", "win_rate",
+                "wins", "losses", "dynamic_threshold"):
+        assert key in data, f"Falta clave '{key}' en la respuesta"
+
+
+@pytest.mark.asyncio
+async def test_stats_endpoint_win_rate_zero_with_no_results(client):
+    """Trades sin resultado (pending) no deben afectar el Win Rate."""
     import server
     server.app.state.use_mongo = False
     now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    server.app.state.signals_store = []
     server.app.state.trades_store = [
-        {"symbol": "OTC_EURUSD", "result": "win",  "audit_confidence": "high",
-         "session": "london", "created_at": now_str, "payout": 85},
-        {"symbol": "OTC_EURUSD", "result": "win",  "audit_confidence": "low",   # simulado
-         "session": "london", "created_at": now_str, "payout": 85},
+        {"symbol": "OTC_EURUSD", "result": "pending", "created_at": now_str},
+        {"symbol": "OTC_EURUSD", "result": "pending", "created_at": now_str},
     ]
 
-    response = client.get("/v1/stats?window=1h")
-    data = response.json()
-    # Solo 1 trade "high" debe contar
-    assert data["global"]["total"] == 1
-
-
-@pytest.mark.asyncio
-async def test_stats_endpoint_caches_result(client):
-    """La segunda llamada al endpoint debe retornar cached=True."""
-    import server
-    server.app.state.trades_store = []
-    server.app.state.redis = None   # caché in-memory
-
-    # Primera llamada → calcula
-    r1 = client.get("/v1/stats?window=4h")
-    assert r1.json()["cached"] is False
-
-    # Segunda llamada → desde caché
-    r2 = client.get("/v1/stats?window=4h")
-    assert r2.json()["cached"] is True
-
-
-@pytest.mark.asyncio
-async def test_stats_endpoint_invalid_window_defaults_to_1h(client):
-    """Un window inválido debe ser ignorado y usar 1h por defecto."""
-    import server
-    server.app.state.trades_store = []
-
-    response = client.get("/v1/stats?window=99h")
+    response = client.get("/api/stats")
     assert response.status_code == 200
-    assert response.json()["window"] == "1h"
+    data = response.json()
+    assert data["win_rate"] == 0.0
+    assert data["wins"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stats_endpoint_accepts_unknown_params(client):
+    """El endpoint debe responder 200 aunque se pasen parámetros desconocidos."""
+    import server
+    server.app.state.trades_store  = []
+    server.app.state.signals_store = []
+
+    response = client.get("/api/stats?window=99h&foo=bar")
+    assert response.status_code == 200

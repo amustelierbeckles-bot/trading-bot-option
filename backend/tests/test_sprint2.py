@@ -73,8 +73,9 @@ def test_session_off_outside_operative_window():
 
 
 def test_session_name_is_newyork_at_16_00_utc():
-    """16:00 UTC (11:00 UTC-5) → ventana mañana activa, session newyork (13–21 UTC)."""
-    s = _get_market_session(utc_hour=16, utc_minute=0)
+    """15:00 UTC (11:00 UTC-4 / 10:00 UTC-5) → ventana mañana activa, session newyork (13–21 UTC).
+    Se usa 15:00 UTC para que sea activo tanto en verano (UTC-4) como en invierno (UTC-5)."""
+    s = _get_market_session(utc_hour=15, utc_minute=0)
     assert s["active"] is True
     assert s["name"] == "newyork"
 
@@ -175,7 +176,8 @@ def test_reset_circuit_breaker_endpoint(client):
     })
     assert _cb_is_blocked() is True
 
-    response = client.post("/api/risk/reset-circuit-breaker")
+    response = client.post("/api/risk/circuit-breaker/reset",
+                           headers={"X-API-Key": "test_secret_key"})
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
