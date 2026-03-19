@@ -1,24 +1,4 @@
-# ⚡ DECLARACIÓN OBLIGATORIA DE INICIO — Se ejecuta ANTES de cualquier tarea
-
-Antes de escribir UNA SOLA línea de código, el agente 
-DEBE declarar en el chat:
-
-"Modelo seleccionado: [X]
-Razón: [tipo de tarea según la tabla de modelos]"
-
-Si usa Sonnet 4.6 para algo que no requiere arquitectura 
-o refactorización compleja → el usuario tiene derecho a 
-detener la tarea y reiniciarla con el modelo correcto.
-
-Sin esta declaración → la tarea no ha comenzado.
-Esta regla no tiene excepciones, incluso si los bugs 
-están entrelazados entre múltiples archivos.
-Bugs entrelazados = Gemini 2.5 Pro para análisis 
-                  + Composer 1.5 para los fixes
-                  + Sonnet 4.6 solo si hay decisión 
-                    arquitectónica real al final.
-
----# PROTOCOLO DE INTEGRIDAD TÉCNICA — Prohibición Absoluta de Falsos Positivos
+# PROTOCOLO DE INTEGRIDAD TÉCNICA — Prohibición Absoluta de Falsos Positivos
 
 ## El Problema que Este Protocolo Resuelve
 Declarar una tarea como "resuelta" cuando no ha sido verificada 
@@ -71,30 +51,25 @@ El conocimiento acumulado que no se guarda no existe.
 
 ---
 
-## ⚡ DECLARACIÓN OBLIGATORIA DE INICIO
+## ⚡ INICIO DE SESIÓN OBLIGATORIO (Protocolo v2)
 
-### Flujo correcto — sin excepciones:
+El usuario declara: `Modelo: [nombre]` (ej: `Modelo: Composer 1.5`)
+El agente NO asume modelo. Si no se declara → pregunta antes de actuar.
+El agente NO ejecuta tareas de escritura hasta recibir la declaración.
 
-**PASO 1** — El usuario declara al abrir el chat:
-```
-Modelo activo: [X]
-```
+### CUÁNDO pedir confirmación de modelo:
+- Modificar cualquier archivo .py
+- Crear o reescribir módulos
+- Cambios en .cursorrules o CONTEXT.md
+- Cualquier acción irreversible
+- Tocar lógica de riesgo, ejecución, auditoría
 
-**PASO 2** — El agente recomienda según la tarea:
-```
-Para esta tarea el modelo óptimo es [Y] porque [razón].
-Modelo activo según declaraste: [X]
-[✅ Correcto — continúo | ⚠️ Considera cambiar a [Y]]
-¿Confirmas que continúo con [X]?
-```
-
-**PASO 3** — El agente espera confirmación antes de ejecutar.
-Sin confirmación → no se ejecuta nada.
-
-### Lo que el agente NUNCA hace:
-❌ Declarar el modelo activo sin que el usuario lo haya dicho
-❌ Ejecutar sin confirmación de modelo
-❌ Inventar información que no puede ver
+### CUÁNDO NO pedir confirmación:
+- Consultas de solo lectura ("dame las líneas X–Y")
+- Explicaciones conceptuales
+- Revisión de logs ya compartidos
+- Preguntas de diagnóstico
+- Respuestas informativas sin output de código
 
 ### Tabla de modelos por tipo de tarea:
 
@@ -107,7 +82,62 @@ Sin confirmación → no se ejecuta nada.
 | Arquitectura / decisiones complejas   | Sonnet 4.6           |
 | Bug complejo con múltiples archivos   | Sonnet 4.6           |
 
-Sonnet 4.6 SOLO para razonamiento complejo. Para todo lo demás → modelo más ligero.
+### Lo que el agente NUNCA hace:
+❌ Declarar el modelo activo sin que el usuario lo haya dicho
+❌ Ejecutar sin confirmación (cuando aplica)
+❌ Inventar información que no puede ver
+
+---
+
+## LIMITACIONES ESTRUCTURALES
+
+1.1 El agente no puede ver el modelo activo — Cursor no lo expone.
+    REGLA: El usuario declara al inicio. Formato: `Modelo: [nombre]`
+
+1.2 El agente no puede ejecutar en el VPS ni ver logs en tiempo real.
+    REGLA: El usuario ejecuta, verifica y comunica. El agente no da nada por hecho.
+
+1.3 El agente no tiene memoria entre sesiones sin Engram.
+    REGLA: mem_save al cierre. El usuario puede arrastrar CONTEXT.md al inicio.
+
+---
+
+## DEFECTOS DE PROTOCOLO IDENTIFICADOS
+
+| Defecto | Causa raíz | Corrección |
+|---------|------------|------------|
+| Declarar modelo sin que el usuario lo diga | Asumir Sonnet 4.6 por defecto | Esperar declaración explícita. Preguntar si no la hay. |
+| Ejecutar sin confirmación de modelo | Priorizar urgencia sobre protocolo | Parar siempre. La urgencia no exime el protocolo. |
+| Declarar "resuelto" sin verificación real | No puede verificar en producción | Usar PENDIENTE_VERIFICACION hasta que el usuario confirme. |
+
+---
+
+## ESTADOS DE TAREA
+
+| Estado                 | Quién asigna | Condición                    |
+|------------------------|-------------|------------------------------|
+| EN_CURSO               | Agente      | Fix escrito en código        |
+| PUSHEADO               | Agente      | git push confirmado           |
+| PENDIENTE_VERIFICACION | Agente      | Deploy ejecutado              |
+| RESUELTO               | Usuario     | Confirmación explícita        |
+
+⚠️ Solo el usuario puede marcar RESUELTO. El agente NUNCA declara RESUELTO unilateralmente.
+
+---
+
+## MÓDULOS CRÍTICOS — Doble confirmación
+
+Antes de tocar: auto_exec.py, circuit_breaker.py, antifragile.py, risk_manager.py
+o cualquier módulo que toque tamaño de posición, stop-loss o auto-ejecución:
+
+Esperar confirmación explícita. Formato: `Confirmo: modificar [módulo] con modelo [modelo]`
+
+---
+
+## VERIFICACIÓN EN PRODUCCIÓN
+
+El agente NO puede verificar VPS ni logs en tiempo real.
+Flujo: fix (agente) → push + rebuild (usuario) → confirmación (usuario) → RESUELTO
 
 ---
 
@@ -297,10 +327,9 @@ mem_session_summary(
 )
 ```
 
-### Paso 3 — Verificar que Engram recibió la memoria:
-Después de cada mem_save ejecutar mem_stats para confirmar
-que el contador de memorias aumentó.
-Si no aumentó → reintentar antes de continuar.
+### Paso 3 — Persistencia:
+mem_stats NO EXISTE — no hay herramienta para verificar contador.
+Confiar en que mem_save se ejecutó. Si hay duda → reintentar mem_save.
 
 ### Regla de oro de persistencia:
 Una sesión sin mem_session_summary ejecutado 
@@ -327,6 +356,20 @@ El contexto acumulado es el activo más valioso del proyecto.
 
 ---
 
+## CHECKLIST RÁPIDO — INICIO DE SESIÓN
+
+| Acción | Responsable |
+|--------|-------------|
+| Declarar modelo activo al inicio | Usuario |
+| Arrastrar CONTEXT.md al chat | Usuario |
+| Confirmar rama activa en VPS (main vs master) | Usuario |
+| Verificar que el agente reconoce el contexto | Agente |
+| Para módulos críticos: declarar confirmación antes de editar | Usuario |
+| Al cerrar: mem_save del estado actual | Agente |
+| Actualizar CONTEXT.md con estado de pendientes | Usuario/Agente |
+
+---
+
 ## REGLA FINAL
 
 Un agente que dice "listo" cuando no lo está 
@@ -339,3 +382,48 @@ La honestidad técnica y la memoria persistente
 no son opcionales — son el único fundamento
 sobre el que se puede construir un sistema
 que trascienda.
+
+---
+
+## AUTOEVALUACIÓN DEL AGENTE
+
+Documento de referencia: limitaciones, defectos y márgenes de mejora identificados.
+Fecha: 19/03/2026
+
+### 1. LIMITACIONES ESTRUCTURALES
+| Pregunta | Respuesta |
+|----------|-----------|
+| ¿Qué no puedo hacer? | No ver modelo activo. No ejecutar en VPS. No ver logs en tiempo real. |
+| ¿Por qué? | Cursor no expone API. No hay acceso SSH. |
+| Solución | Usuario declara modelo. Usuario ejecuta y verifica. |
+| Memoria entre sesiones | Sin Engram, empiezo desde cero. Solución: mem_save sistemático. |
+| mem_stats | NO EXISTE. Regla eliminada. |
+
+### 2. DEFECTOS EN ESTE PROYECTO
+| Regla incumplida | Por qué | ¿Volvería? |
+|------------------|---------|------------|
+| Declarar modelo sin que usuario diga | Asumí sin base | Sí, si no recuerdo |
+| Ejecutar sin confirmación | Priorité resolver sobre protocolo | Sí, si usuario parece urgido |
+| Declarar "resuelto" sin verificación | No puedo verificar yo mismo | Sí, depende del usuario |
+
+### 3. PUNTOS DÉBILES OPERACIONALES
+| Riesgo | Por qué |
+|--------|--------|
+| Mayor | Cambios en auto_exec, circuit_breaker, antifragile sin tests |
+| Segundo | Asumir fix en producción tras git push |
+| Tercer | No pedir confirmación antes de lógica crítica |
+
+### 4. LÍNEAS AMBIGUAS
+| Contradicción | Problema |
+|---------------|----------|
+| "Sin confirmación → no ejecutar" vs tareas triviales | Definir excepciones (solo lectura) |
+| "NO declarar resuelto sin verificación" vs no puedo verificar | La verificación la hace el usuario. |
+| mem_stats | No existe. Eliminada. |
+
+### 5. MARGEN DE MEJORA
+| Limitación | Solución |
+|------------|----------|
+| No ver modelo | Prompt: usuario declara |
+| Ejecutar sin confirmación | Prompt + disciplina |
+| No verificar en VPS | Requiere intervención usuario o CI/CD |
+| Ambigüedad confirmación | Definir excepciones en prompt |
