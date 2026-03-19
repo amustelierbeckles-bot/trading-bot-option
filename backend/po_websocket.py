@@ -151,6 +151,8 @@ class POWebSocketProvider:
 
         # Kill-switch
         self._kill_switch_active: bool  = False
+        self._kill_switch_activated_at: float = 0.0
+        self._kill_switch_alert_sent: bool = False
         self._consecutive_errors: int   = 0
         self._max_errors:         int   = 3
 
@@ -621,8 +623,11 @@ class POWebSocketProvider:
     async def _heartbeat_loop(self, ws):
         """Envía ping-server con variación aleatoria (no robótico)."""
         _last_ssid_check = 0.0
+        _last_kill_switch_check = 0.0
         SSID_CHECK_INTERVAL = 3600.0  # 1 hora
+        KILL_SWITCH_CHECK_INTERVAL = 300.0  # 5 minutos
         SSID_EXPIRY_DAYS = 28
+        KILL_SWITCH_ALERT_THRESHOLD = 1800  # 30 minutos
 
         while True:
             # Intervalo con jitter: 25s ± 3s aleatorio
@@ -630,8 +635,24 @@ class POWebSocketProvider:
             await asyncio.sleep(interval)
 
             try:
-                # Check expiración SSID cada hora
                 now = time.time()
+
+                # Check kill-switch activo > 30 min cada 5 minutos
+                if now - _last_kill_switch_check >= KILL_SWITCH_CHECK_INTERVAL:
+                    _last_kill_switch_check = now
+                    if (self._kill_switch_active
+                            and not self._kill_switch_alert_sent
+                            and self._kill_switch_activated_at > 0
+                            and (now - self._kill_switch_activated_at) >= KILL_SWITCH_ALERT_THRESHOLD):
+                        self._kill_switch_alert_sent = True
+                        from services.telegram_service import send_telegram
+                        asyncio.create_task(send_telegram(
+                            "🔴 KILL-SWITCH activo hace más de 30 minutos\n"
+                            "El bot NO está operando.\n"
+                            "Verifica la conexión a PocketOption y renueva el SSID si es necesario."
+                        ))
+
+                # Check expiración SSID cada hora
                 if now - _last_ssid_check >= SSID_CHECK_INTERVAL:
                     _last_ssid_check = now
                     if (self._ssid_configured_at > 0
@@ -662,6 +683,9 @@ class POWebSocketProvider:
         """
         if not self._kill_switch_active:
             self._kill_switch_active = True
+            if self._kill_switch_activated_at == 0.0:
+                self._kill_switch_activated_at = time.time()
+                self._kill_switch_alert_sent = False
             self.status = "evading"
             self.is_connected = False
             logger.warning("🔴 KILL-SWITCH ACTIVADO — Fallback a Twelve Data")
@@ -669,6 +693,8 @@ class POWebSocketProvider:
     def reset_kill_switch(self):
         """Resetea el kill-switch para intentar reconectar."""
         self._kill_switch_active = False
+        self._kill_switch_activated_at = 0.0
+        self._kill_switch_alert_sent = False
         self._consecutive_errors = 0
         self.status = "disconnected"
         logger.info("🟢 Kill-switch reseteado — intentando reconectar")
