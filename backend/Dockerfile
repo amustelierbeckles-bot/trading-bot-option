@@ -16,7 +16,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Instalación explícita: SOCKS para PO WebSocket (websockets 16+); evita deploy sin el paquete si requirements quedó desincronizado en el VPS
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "python-socks[asyncio]>=1.7.1"
 
 COPY . .
 

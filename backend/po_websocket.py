@@ -272,6 +272,19 @@ class POWebSocketProvider:
             max_size=10 * 1024 * 1024,
         )
         if self._proxy_url:
+            # websockets usa python-socks internamente para SOCKS; sin el paquete falla en runtime
+            scheme = self._proxy_url.split("://", 1)[0].lower() if "://" in self._proxy_url else ""
+            if scheme.startswith("socks"):
+                try:
+                    import python_socks  # noqa: F401  # type: ignore[import-untyped]
+                except ImportError as exc:
+                    logger.error(
+                        "PO_PROXY_URL es SOCKS5 pero falta python-socks — "
+                        "añade python-socks[asyncio] a backend/requirements.txt y rebuild"
+                    )
+                    raise RuntimeError(
+                        "connecting through a SOCKS proxy requires python-socks"
+                    ) from exc
             connect_kwargs["proxy"] = self._proxy_url
             logger.info("🌐 Conectando vía proxy → %s", self._proxy_url.split("@")[-1])
 

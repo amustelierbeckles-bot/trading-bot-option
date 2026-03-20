@@ -4,6 +4,7 @@ motor
 redis
 python-dotenv
 websockets
+python-socks[asyncio]>=1.7.1
 aiohttp
 pydantic
 python-telegram-bot
