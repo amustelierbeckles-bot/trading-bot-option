@@ -446,6 +446,14 @@ class POWebSocketProvider:
             self._buffers[otc_sym].update(price, ts)
             self.ticks_received += 1
 
+            # Diagnóstico temporal — quitar tras verificar ticks/velas
+            buf = self._buffers[otc_sym]
+            if self.ticks_received % 50 == 0:
+                logger.info(
+                    "📊 %s | price=%.5f | ts=%.0f | velas=%d | ready=%s",
+                    otc_sym, price, ts, len(buf.candles), buf.is_ready
+                )
+
             for cb in self._price_callbacks:
                 try:
                     asyncio.create_task(cb(otc_sym, price))
@@ -516,6 +524,14 @@ class POWebSocketProvider:
 
         self._buffers[otc_sym].update(float(price), float(ts))
         self.ticks_received += 1
+
+        # Diagnóstico temporal — quitar tras verificar ticks/velas
+        buf = self._buffers[otc_sym]
+        if self.ticks_received % 50 == 0:
+            logger.info(
+                "📊 [JSON] %s | price=%.5f | ts=%.0f | velas=%d | ready=%s",
+                otc_sym, float(price), float(ts), len(buf.candles), buf.is_ready
+            )
 
         # Notifica callbacks externos (para el scan loop)
         for cb in self._price_callbacks:
