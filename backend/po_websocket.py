@@ -167,10 +167,14 @@ class POWebSocketProvider:
         self._ssid_configured_at: float = 0.0
         self._ssid_alert_sent: bool = False
 
+        # Proxy residencial para evadir bloqueo de IPs datacenter
+        self._proxy_url: str = ""  # formato: "http://user:pass@host:port" o "socks5://..."
+
     # ── Configuración ─────────────────────────────────────────────────────────
 
     def configure(self, ssid: str, secret: str = "", user_id: int = 0,
-                  full_cookie: str = "", is_demo: bool = True):
+                  full_cookie: str = "", is_demo: bool = True,
+                  proxy_url: str = ""):
         """
         Configura las credenciales de sesión.
         ssid: valor de la cookie 'ci_session' de PO
@@ -184,10 +188,15 @@ class POWebSocketProvider:
         self._secret     = secret
         self._user_id    = user_id
         self._full_cookie = full_cookie
+        self._proxy_url   = proxy_url
         self.is_configured = bool(ssid or full_cookie)
         WS_URL = WS_URL_DEMO if is_demo else WS_URL_REAL
-        logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s",
-                    user_id, "DEMO" if is_demo else "REAL")
+        if proxy_url:
+            logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | proxy=%s",
+                        user_id, "DEMO" if is_demo else "REAL", proxy_url.split("@")[-1])
+        else:
+            logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | sin proxy",
+                        user_id, "DEMO" if is_demo else "REAL")
 
     # ── Inicio ────────────────────────────────────────────────────────────────
 
@@ -255,14 +264,18 @@ class POWebSocketProvider:
             elif self._ssid:
                 headers["Cookie"] = f"ci_session={self._ssid}"
 
-        async with websockets.connect(
-            WS_URL,
+        connect_kwargs = dict(
             additional_headers=headers,
             ping_interval=None,   # manejamos ping manualmente con jitter
             ping_timeout=30,
             close_timeout=10,
             max_size=10 * 1024 * 1024,
-        ) as ws:
+        )
+        if self._proxy_url:
+            connect_kwargs["proxy"] = self._proxy_url
+            logger.info("🌐 Conectando vía proxy → %s", self._proxy_url.split("@")[-1])
+
+        async with websockets.connect(WS_URL, **connect_kwargs) as ws:
             self._ws             = ws
             self.is_connected    = True
             self.connected_since = time.time()
@@ -797,8 +810,11 @@ def get_po_provider() -> Optional[POWebSocketProvider]:
 
 
 def init_po_provider(ssid: str, secret: str = "", user_id: int = 0,
-                     full_cookie: str = "", is_demo: bool = True) -> POWebSocketProvider:
+                     full_cookie: str = "", is_demo: bool = True,
+                     proxy_url: str = "") -> POWebSocketProvider:
     global _po_provider
     _po_provider = POWebSocketProvider()
-    _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo)
+    resolved_proxy = proxy_url or os.getenv("PO_PROXY_URL", "")
+    _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo,
+                           proxy_url=resolved_proxy)
     return _po_provider
