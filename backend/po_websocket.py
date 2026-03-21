@@ -842,7 +842,12 @@ def init_po_provider(ssid: str, secret: str = "", user_id: int = 0,
                      full_cookie: str = "", is_demo: bool = True,
                      proxy_url: str = "") -> POWebSocketProvider:
     global _po_provider
+    previous = _po_provider
     _po_provider = POWebSocketProvider()
+    # Misma instancia no pierde _buffers al reconectar; al llamar init de nuevo
+    # se creaba un provider nuevo y se vaciaban las velas (is_ready nunca ≥30).
+    if previous is not None:
+        _po_provider._buffers = previous._buffers
     resolved_proxy = proxy_url or os.getenv("PO_PROXY_URL", "")
     _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo,
                            proxy_url=resolved_proxy)

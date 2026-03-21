@@ -174,11 +174,24 @@ async def test_p3_5_buffers_persist_when_not_reinstantiated():
 
 @pytest.mark.asyncio
 async def test_p3_5_new_provider_resets_buffers():
-    """Document: init_po_provider creates new instance — buffers empty."""
+    """Dos constructores POWebSocketProvider() distintos → buffers independientes."""
     p1 = POWebSocketProvider()
     await p1._handle_binary_price(b'["#EURUSD_otc",1082500]')
     p2 = POWebSocketProvider()
     assert p2._buffers["OTC_EURUSD"].last_price == 0.0
+
+
+def test_init_po_provider_preserves_buffers_on_reinit():
+    """Segundo init_po_provider reutiliza _buffers del singleton anterior."""
+    import po_websocket as mod
+
+    mod._po_provider = None
+    p1 = mod.init_po_provider("ssid-a")
+    p1._buffers["OTC_EURUSD"].last_price = 1.2345
+    p2 = mod.init_po_provider("ssid-b")
+    assert p2 is not p1
+    assert p2._buffers["OTC_EURUSD"].last_price == pytest.approx(1.2345)
+    mod._po_provider = None
 
 
 # =============================================================================
