@@ -1,32 +1,42 @@
- # CONTEXT.md — Estado actual del proyecto
-## Última actualización: 20/03/2026 — 02:30 UTC-4
+# CONTEXT.md — Estado actual del proyecto
+## Última actualización: 20/03/2026
 
 ---
 
-## PROBLEMA ACTIVO — SIN SEÑALES 24H
-- Causa confirmada: IP del VPS (DigitalOcean datacenter) bloqueada por PO
-- PO conecta y suscribe 20 pares pero NO envía ticks de precio
-- Solución en curso: proxy residencial via Webshare.io
+## PROXY PO — DESPLEGADO (resuelto operativamente)
+- **Causa raíz:** IP del VPS (datacenter) → PocketOption no enviaba ticks aunque el WebSocket conectaba y suscribía 20 pares.
+- **Solución activa:** `PO_PROXY_URL=socks5://user:pass@host:port` (proxy residencial, p. ej. Webshare) + `python-socks[asyncio]` en la imagen Docker.
+- **Código:** `backend/po_websocket.py` — `websockets.connect(..., proxy=...)`; `backend/requirements.txt` + `backend/Dockerfile` (pip explícito de `python-socks`).
+- **Último push relevante:** `main` incluye deps Docker y chequeo SOCKS (p. ej. commit `aee618b` o posterior).
+- **Verificado en VPS:** logs con `modo=REAL`, `Conectando vía proxy → …`, `POWebSocket conectado a events-po.com`, handshake Socket.IO, suscripción a 20 pares.
 
-## SOLUCIÓN EN PROGRESO
-- Código listo: po_websocket.py soporta PO_PROXY_URL (commit df516c5)
-- Webshare.io: cuenta creada, configurando plan Static Residential
-- Configuración elegida: Shared, 20 IPs, 250 GB, $6/mes
-- Ubicación: United Kingdom o Random Europa
-- Falta: completar pago → obtener credenciales → añadir PO_PROXY_URL al .env del VPS → rebuild
+---
 
-## PRÓXIMOS PASOS
-1. Completar compra en Webshare
-2. Ir a Proxy List → obtener host, port, user, password
-3. En VPS: nano /opt/trading-bot/backend/.env
-   Añadir: PO_PROXY_URL=socks5://user:pass@proxy.host:port
-4. Rebuild completo:
-   docker build -t trading-bot-api-img:latest -f backend/Dockerfile backend/
-   docker stop trading-bot-api && docker rm trading-bot-api
-   docker-compose -f docker-compose.production.yml up -d api
-5. Verificar ticks en logs
+## PRÓXIMA VERIFICACIÓN (ventana operativa)
+- Confirmar **ticks de precio** en logs cuando el bot esté **dentro de ventana** (mañana 09:30–12:00 o madrugada 00:00–02:00 hora local DST).
+- Fuera de ventana: `auto_exec` puede mostrar *Fuera de ventana / Bot pausado* — el WS puede seguir conectado.
 
-## PENDIENTES RESTANTES
-✅ Todos los pendientes anteriores resueltos
-🔴 Bot sin señales — proxy residencial en curso
-🟢 AUTO_EXECUTE — WR 50% → umbral 55%
+---
+
+## DEPLOY VPS (referencia rápida)
+```bash
+cd /opt/trading-bot && git pull origin main
+docker build --no-cache -t trading-bot-api-img:latest -f backend/Dockerfile backend/
+docker stop trading-bot-api && docker rm trading-bot-api
+docker-compose -f docker-compose.production.yml up -d api
+docker logs trading-bot-api --tail=50
+```
+Tras cambiar solo `.env`: a veces basta recrear el contenedor; si cambian dependencias, **rebuild** como arriba.
+
+---
+
+## PENDIENTES
+- 🟡 **Ticks en producción:** validar en horario de scan que el buffer recibe datos (no solo conexión + subscribe).
+- 🟢 **AUTO_EXECUTE:** WR ~50% vs umbral **55%** — decidir estrategia (seguir acumulando ops o ajustar umbral).
+- 🟡 **Opcional:** commitear `.agents/skills/` si deben vivir en el repo.
+
+---
+
+## CÓMO RETOMAR
+Arrastra este archivo al chat y escribe:
+> Lee CONTEXT.md y continúa desde donde lo dejamos.
