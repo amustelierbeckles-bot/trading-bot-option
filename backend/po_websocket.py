@@ -201,19 +201,34 @@ class POWebSocketProvider:
     # ── Inicio ────────────────────────────────────────────────────────────────
 
     async def start(self):
-        """Arranca el loop de conexión en background."""
+        """Arranca el loop de conexión en background.
+
+        Idempotente: si ya hay una tarea corriendo no lanza un segundo loop.
+        """
         if not self.is_configured:
             logger.warning("⚠️  POWebSocket no configurado — falta SSID")
+            return
+        if self._task and not self._task.done():
+            logger.debug("♻️  POWebSocket ya en ejecución — start() no-op")
             return
         self._task = asyncio.create_task(self._connection_loop())
         logger.info("🚀 POWebSocket iniciado")
 
     async def stop(self):
-        """Detiene la conexión limpiamente."""
-        if self._task:
+        """Detiene la conexión limpiamente y espera a que el loop termine."""
+        if self._task and not self._task.done():
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self._task = None
         if self._ws:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+        self._ws = None
         self.is_connected = False
         self.status = "disconnected"
         logger.info("🛑 POWebSocket detenido")
@@ -841,14 +856,21 @@ def get_po_provider() -> Optional[POWebSocketProvider]:
 def init_po_provider(ssid: str, secret: str = "", user_id: int = 0,
                      full_cookie: str = "", is_demo: bool = True,
                      proxy_url: str = "") -> POWebSocketProvider:
+    """Devuelve el singleton POWebSocketProvider, reutilizando la instancia
+    existente cuando ya hay una — preserva _buffers, _price_callbacks y
+    _pending_orders sin necesidad de copiar estado entre objetos.
+
+    Primera llamada: crea la instancia.
+    Llamadas siguientes: solo reconfigura credenciales; start() es idempotente
+    por lo que el _connection_loop en curso no se duplica.
+    """
     global _po_provider
-    previous = _po_provider
-    _po_provider = POWebSocketProvider()
-    # Misma instancia no pierde _buffers al reconectar; al llamar init de nuevo
-    # se creaba un provider nuevo y se vaciaban las velas (is_ready nunca ≥30).
-    if previous is not None:
-        _po_provider._buffers = previous._buffers
     resolved_proxy = proxy_url or os.getenv("PO_PROXY_URL", "")
+    if _po_provider is not None:
+        _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo,
+                               proxy_url=resolved_proxy)
+        return _po_provider
+    _po_provider = POWebSocketProvider()
     _po_provider.configure(ssid, secret, user_id, full_cookie, is_demo,
                            proxy_url=resolved_proxy)
     return _po_provider

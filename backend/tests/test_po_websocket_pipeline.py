@@ -182,14 +182,15 @@ async def test_p3_5_new_provider_resets_buffers():
 
 
 def test_init_po_provider_preserves_buffers_on_reinit():
-    """Segundo init_po_provider reutiliza _buffers del singleton anterior."""
+    """Segundo init_po_provider reutiliza la misma instancia — _buffers,
+    _price_callbacks y _pending_orders sobreviven sin copiar estado."""
     import po_websocket as mod
 
     mod._po_provider = None
     p1 = mod.init_po_provider("ssid-a")
     p1._buffers["OTC_EURUSD"].last_price = 1.2345
     p2 = mod.init_po_provider("ssid-b")
-    assert p2 is not p1
+    assert p2 is p1, "init_po_provider debe reutilizar la instancia existente"
     assert p2._buffers["OTC_EURUSD"].last_price == pytest.approx(1.2345)
     mod._po_provider = None
 
