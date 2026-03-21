@@ -7,10 +7,14 @@ Auto-ejecución y loop de escaneo automático de señales.
 import asyncio
 import logging
 import os
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
 
 _last_wr_blocked: bool = False
+
+# Rotación round-robin para fallback Twelve Data cuando PO no está listo (ver CONTEXT.md).
+_td_fallback_queue: deque = deque()
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +215,9 @@ async def _auto_scan_loop(app):
     from services.audit_service import verify_every_signal
 
     INTERVAL         = 120
+    # Máximo de pares a rellenar vía Twelve Data por ciclo cuando PO no está listo
+    # (caché 300s + este tope reducen req/día frente al límite del plan).
+    MAX_TD_FALLBACK_PER_CYCLE = 5
     MIN_CONFIDENCE   = 0.68
     MIN_QUALITY_BASE = 0.55
     MAX_PER_CYCLE    = 2
@@ -375,6 +382,33 @@ async def _auto_scan_loop(app):
                     ind.last_candle_time = candles[-1].time if candles else ""
                     indicators_map[sym]  = ind
                     po_ready += 1
+
+                # PO conectado pero par sin tick reciente (is_ready False): Twelve Data
+                # real con caché (TTL típico 300s). Máximo MAX_TD_FALLBACK_PER_CYCLE pares
+                # por ciclo en paralelo — reduce req/día y latencia vs. 20× await en serie.
+                if provider and provider.is_configured:
+                    global _td_fallback_queue
+                    pending = [s for s in pairs_to_scan if s not in indicators_map]
+                    pairs_for_td: list = []
+                    if pending:
+                        if (not _td_fallback_queue
+                                or set(_td_fallback_queue) != set(pending)):
+                            _td_fallback_queue = deque(pending)
+                        n_pick = min(MAX_TD_FALLBACK_PER_CYCLE, len(_td_fallback_queue))
+                        for _ in range(n_pick):
+                            pairs_for_td.append(_td_fallback_queue[0])
+                            _td_fallback_queue.rotate(-1)
+                    if pairs_for_td:
+                        results = await asyncio.gather(
+                            *[provider.get_indicators(s) for s in pairs_for_td],
+                            return_exceptions=True,
+                        )
+                        for sym, ind in zip(pairs_for_td, results):
+                            if isinstance(ind, Exception):
+                                continue
+                            if ind is None:
+                                continue
+                            indicators_map[sym] = ind
 
             fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
             td_fallback   = len(pairs_to_scan) - po_ready

@@ -12,6 +12,15 @@
 
 ---
 
+## Rate limit Twelve Data
+- Plan gratuito: **800 req/día**, ~8 req/min (según Twelve Data).
+- **`MAX_TD_FALLBACK_PER_CYCLE = 5`** en `backend/auto_exec.py` dentro de `_auto_scan_loop`.
+- **Razón:** limitar peticiones cuando PO no envía ticks y el scan usa fallback TD en lugar del buffer en vivo.
+- **Rotación round-robin** (`_td_fallback_queue`): los pares pendientes rotan cada ciclo; con 20 pares y tope 5, en **4 ciclos** como máximo se ha intentado cubrir los 20 (salvo que `pending` cambie y se reinicie la cola).
+- **Cambiar** el tope solo si se sube de plan TD o se ajusta el presupuesto de req/día.
+
+---
+
 ## PRÓXIMA VERIFICACIÓN (ventana operativa)
 - Confirmar **ticks de precio** en logs cuando el bot esté **dentro de ventana** (mañana 09:30–12:00 o madrugada 00:00–02:00 hora local DST).
 - Fuera de ventana: `auto_exec` puede mostrar *Fuera de ventana / Bot pausado* — el WS puede seguir conectado.
