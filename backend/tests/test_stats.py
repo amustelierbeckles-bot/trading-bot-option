@@ -127,6 +127,7 @@ def clear_wr_cache():
 async def test_stats_endpoint_empty(client):
     """Con trades_store vacío, debe retornar totales en cero sin error."""
     import server
+    server.app.state.use_mongo     = False
     server.app.state.trades_store  = []
     server.app.state.signals_store = []
 
