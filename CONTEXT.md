@@ -1,5 +1,13 @@
 # CONTEXT.md — Estado actual del proyecto
-## Última actualización: 20/03/2026
+## Última actualización: 21/03/2026
+
+---
+
+## Autenticación PocketOption WebSocket
+- El mensaje `42["auth", {"session": SSID, "isDemo": 0|1}]` se envía tras el handshake.
+- Solo requiere SSID válido — `PO_USER_ID` y `PO_SECRET` no son necesarios para el feed de precios.
+- Variables en `.env.production`: `PO_SSID` (obligatorio), `PO_USER_ID` y `PO_SECRET` (opcionales).
+- Si el SSID expira → reconexión en loop sin ticks → renovar `ci_session` desde DevTools PO.
 
 ---
 

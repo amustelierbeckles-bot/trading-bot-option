@@ -77,6 +77,8 @@ SUB_DELAY_MIN   = 1.2   # delay mínimo entre suscripciones (comportamiento huma
 SUB_DELAY_MAX   = 3.5   # delay máximo
 CANDLE_HISTORY  = 60    # velas a mantener en memoria por par
 RECONNECT_DELAY = 5     # segundos antes de reconectar
+# Tick en vivo requerido para considerar el buffer "listo" (evita CCI congelado con solo seed TD)
+BUFFER_DATA_MAX_AGE_SEC = 120
 
 
 class CandleBuffer:
@@ -118,8 +120,10 @@ class CandleBuffer:
 
     @property
     def is_ready(self) -> bool:
-        """True si hay suficientes velas para calcular indicadores."""
-        return len(self.candles) >= 30
+        """True si hay ≥30 velas y un tick reciente (seed histórico solo no basta)."""
+        if len(self.candles) < 30 or self.last_update <= 0:
+            return False
+        return (time.time() - self.last_update) < BUFFER_DATA_MAX_AGE_SEC
 
 
 class POWebSocketProvider:
@@ -139,6 +143,9 @@ class POWebSocketProvider:
             sym: CandleBuffer() for sym in OTC_SYMBOL_MAP
         }
 
+        # Contador por par para log DEBUG de ticks binarios (cada 100 ticks / par)
+        self._binary_tick_log_counts: Dict[str, int] = defaultdict(int)
+
         # Callbacks externos
         self._price_callbacks: List[Callable] = []
 
@@ -148,6 +155,7 @@ class POWebSocketProvider:
         self._ssid:    str   = ""   # session ID de PO
         self._secret:  str   = ""   # secret token de autenticación
         self._user_id: int   = 0
+        self._is_demo: bool = True  # refleja configure(); usado en 42["auth", ...]
 
         # Kill-switch
         self._kill_switch_active: bool  = False
@@ -187,6 +195,7 @@ class POWebSocketProvider:
         self._ssid_alert_sent    = False
         self._secret     = secret
         self._user_id    = user_id
+        self._is_demo    = is_demo
         self._full_cookie = full_cookie
         self._proxy_url   = proxy_url
         self.is_configured = bool(ssid or full_cookie)
@@ -340,14 +349,14 @@ class POWebSocketProvider:
         await ws.send("40")
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
-        # Autenticación con secret si está disponible
-        if self._secret and self._user_id:
+        # Auth Socket.IO: payload solo usa session + isDemo (SSID/cookie ya en headers)
+        if self._ssid:
             auth_msg = json.dumps(["auth", {
                 "session": self._ssid,
-                "isDemo":  1,
+                "isDemo": 1 if self._is_demo else 0,
             }])
             await ws.send(f"42{auth_msg}")
-            logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
+            logger.info("🔐 Auth enviado | isDemo=%d", 1 if self._is_demo else 0)
             await asyncio.sleep(random.uniform(0.5, 1.2))
 
         # Suscribirse a los pares con delay humano
@@ -437,6 +446,12 @@ class POWebSocketProvider:
           bytes: 5B 22 45 55 52 4A 50 59 5F 6F 74 63 22 2C 31 37 37 32 33 31 31 37 36 5D
           texto: ["EURJPY_otc",177231176]
           precio: 177231176 / 1_000_000 = 177.231176
+
+        Diagnóstico si no ves logs DEBUG "tick binary | ..." (cada 100 ticks por par):
+          - SSID/cookie inválidos o IP distinta a la del navegador (PO corta el feed).
+          - Feed solo por JSON (updateStream) y no por frames binarios → revisar _handle_price.
+          - Suscripción enviada pero activo sin cotización en demo / mercado cerrado.
+          - Activar logging DEBUG en ``po_websocket``; sin ticks no aparecerá ninguna línea.
         """
         try:
             text   = raw.decode("utf-8", errors="replace")
@@ -461,7 +476,14 @@ class POWebSocketProvider:
             self._buffers[otc_sym].update(price, ts)
             self.ticks_received += 1
 
-            # Diagnóstico temporal — quitar tras verificar ticks/velas
+            self._binary_tick_log_counts[otc_sym] += 1
+            if self._binary_tick_log_counts[otc_sym] % 100 == 0:
+                logger.debug(
+                    "tick binary | %s price=%.6f ticks_total=%d (cada 100 ticks/par)",
+                    otc_sym, price, self.ticks_received,
+                )
+
+            # Diagnóstico agregado (INFO cada 50 ticks globales)
             buf = self._buffers[otc_sym]
             if self.ticks_received % 50 == 0:
                 logger.info(
@@ -484,15 +506,13 @@ class POWebSocketProvider:
         # Precio en tiempo real
         if event in ("updateStream", "candle", "tick", "price_update"):
             await self._handle_price(data)
-            return
 
         # Autenticación exitosa
-        if event in ("user_ready", "successauth"):
+        elif event in ("user_ready", "successauth"):
             logger.info("✅ Autenticación PO exitosa")
-            return
 
         # Error de autenticación
-        if event in ("notauthorized", "error"):
+        elif event in ("notauthorized", "error"):
             logger.warning("🔴 Error de auth PO: %s", data)
             from services.telegram_service import send_telegram
             asyncio.create_task(send_telegram(
@@ -500,22 +520,22 @@ class POWebSocketProvider:
                 "El bot perdió conexión. Actualiza ci_session en .env y reinicia."
             ))
             self._activate_kill_switch()
-            return
 
         # Candle histórica
-        if event in ("candles", "history"):
+        elif event in ("candles", "history"):
             await self._handle_history(data)
-            return
 
         # Respuesta de orden abierta
-        if event in ("openOrder", "successOpenOrder", "order_placed"):
+        elif event in ("openOrder", "successOpenOrder", "order_placed"):
             await self._handle_order_response(data)
-            return
 
         # Resultado final de orden (win/loss)
-        if event in ("closeOrder", "successCloseOrder"):
+        elif event in ("closeOrder", "successCloseOrder"):
             await self._handle_order_close(data)
-            return
+
+        else:
+            snippet = str(data)[:100] if data is not None else ""
+            logger.debug("evento desconocido | %s | %s", event, snippet)
 
     async def _handle_price(self, data: dict):
         """Procesa tick de precio y actualiza buffer."""
@@ -787,9 +807,10 @@ class POWebSocketProvider:
                     added += 1
             except Exception:
                 pass
+        # No tocar last_update: solo ticks en vivo (update / _handle_binary_price)
+        # deben marcar datos como recientes; si no, is_ready=False y el scan hace fallback.
         if added:
-            buf.last_price  = candles[-1].close if candles else buf.last_price
-            buf.last_update = time.time()
+            buf.last_price = candles[-1].close if candles else buf.last_price
         return added
 
     def get_cached_price(self, otc_symbol: str) -> Optional[float]:
