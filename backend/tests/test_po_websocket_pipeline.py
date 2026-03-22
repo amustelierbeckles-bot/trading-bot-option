@@ -14,11 +14,22 @@ import pytest
 sys.path.append(str(Path(__file__).parent.parent))
 
 from data_provider import CandleData, IndicatorSet
+import po_websocket as po_websocket_mod
 from po_websocket import (
     CandleBuffer,
     OTC_SYMBOL_MAP,
     POWebSocketProvider,
 )
+
+# Última vela sembrada con last_update reciente (< BUFFER_DATA_MAX_AGE_SEC)
+def seed_thirty_candles_fresh(buf: CandleBuffer, base_price: float = 1.0820):
+    """≥30 velas y last_update alineado con po_websocket.time.time() (is_ready)."""
+    now = po_websocket_mod.time.time()
+    start_ts = now - 29 * 60 - 45
+    seed_buffer_one_candle_per_minute(buf, start_ts, 30, base_price)
+    # El último tick sembrado queda ~45s en el pasado; en CI el assert puede correr
+    # con latencia o tras otros tests — forzar last_update al reloj actual.
+    buf.update(buf.last_price, po_websocket_mod.time.time())
 
 
 # ── Mirror of auto_exec _auto_scan_loop PO branch (no app.state) ──────────────
@@ -224,8 +235,63 @@ class TestGetLatestPriceAndIsReady:
 
     def test_s2_6_is_ready_true_with_thirty_candles(self):
         prov = POWebSocketProvider()
-        seed_buffer_one_candle_per_minute(prov._buffers["OTC_EURUSD"], time.time() - 4000, 30)
+        seed_thirty_candles_fresh(prov._buffers["OTC_EURUSD"])
         assert prov.is_ready("OTC_EURUSD") is True
+
+    def test_s2_6b_seed_from_candles_not_ready_without_live_tick(self):
+        """Siembra ≥30 velas vía seed_from_candles; last_update sigue 0 → no listo."""
+        prov = POWebSocketProvider()
+        base_ts = int(time.time()) - 35 * 60
+        rows = [
+            CandleData(
+                time=datetime.utcfromtimestamp(base_ts + i * 60).strftime("%Y-%m-%d %H:%M:%S"),
+                open=1.0,
+                high=1.01,
+                low=0.99,
+                close=1.0 + i * 1e-5,
+            )
+            for i in range(35)
+        ]
+        n = prov.seed_from_candles("OTC_EURUSD", rows)
+        assert n >= 1
+        assert len(prov._buffers["OTC_EURUSD"].candles) >= 30
+        assert prov._buffers["OTC_EURUSD"].last_update == 0.0
+        assert prov.is_ready("OTC_EURUSD") is False
+
+    def test_s2_6b_seed_then_live_tick_ready(self):
+        """Tras seed_from_candles, un tick en vivo actualiza last_update → is_ready True."""
+        prov = POWebSocketProvider()
+        base_ts = int(time.time()) - 35 * 60
+        rows = [
+            CandleData(
+                time=datetime.utcfromtimestamp(base_ts + i * 60).strftime("%Y-%m-%d %H:%M:%S"),
+                open=1.0,
+                high=1.01,
+                low=0.99,
+                close=1.0 + i * 1e-5,
+            )
+            for i in range(35)
+        ]
+        prov.seed_from_candles("OTC_EURUSD", rows)
+        assert prov.is_ready("OTC_EURUSD") is False
+        prov._buffers["OTC_EURUSD"].update(1.5, time.time())
+        assert prov.is_ready("OTC_EURUSD") is True
+
+    def test_s2_boundary_120s(self):
+        """BUFFER_DATA_MAX_AGE_SEC: -119s → listo, -121s → no listo; exactamente 120s → no."""
+        prov = POWebSocketProvider()
+        buf = prov._buffers["OTC_EURUSD"]
+        t_now = 2_000_000_000.0
+        seed_buffer_one_candle_per_minute(buf, t_now - 29 * 60 - 500, 30, 1.0)
+        buf.last_update = t_now - 119.0
+        with patch.object(po_websocket_mod.time, "time", return_value=t_now):
+            assert prov.is_ready("OTC_EURUSD") is True
+        buf.last_update = t_now - 120.0
+        with patch.object(po_websocket_mod.time, "time", return_value=t_now):
+            assert prov.is_ready("OTC_EURUSD") is False
+        buf.last_update = t_now - 121.0
+        with patch.object(po_websocket_mod.time, "time", return_value=t_now):
+            assert prov.is_ready("OTC_EURUSD") is False
 
 
 class TestBuildIndicatorsFromPo:
@@ -233,8 +299,8 @@ class TestBuildIndicatorsFromPo:
 
     def test_s2_7_only_ready_pairs_in_indicators_map(self):
         prov = POWebSocketProvider()
-        seed_buffer_one_candle_per_minute(prov._buffers["OTC_EURUSD"], time.time() - 5000, 30)
-        seed_buffer_one_candle_per_minute(prov._buffers["OTC_GBPUSD"], time.time() - 5000, 30)
+        seed_thirty_candles_fresh(prov._buffers["OTC_EURUSD"])
+        seed_thirty_candles_fresh(prov._buffers["OTC_GBPUSD"])
         symbols = list(OTC_SYMBOL_MAP.keys())
         m = build_indicators_map_from_po(prov, symbols)
         assert len(m) == 2
@@ -242,13 +308,16 @@ class TestBuildIndicatorsFromPo:
 
     def test_s2_1_second_cycle_reflects_buffer_mutation(self):
         prov = POWebSocketProvider()
-        t0 = time.time() - 4000
-        seed_buffer_one_candle_per_minute(prov._buffers["OTC_EURUSD"], t0, 30, 1.0)
+        now = po_websocket_mod.time.time()
+        start_ts = now - 29 * 60 - 45
+        seed_buffer_one_candle_per_minute(prov._buffers["OTC_EURUSD"], start_ts, 30, 1.0)
+        buf = prov._buffers["OTC_EURUSD"]
+        buf.update(buf.last_price, po_websocket_mod.time.time())
         symbols = ["OTC_EURUSD"]
         m1 = build_indicators_map_from_po(prov, symbols)
         cci1 = m1["OTC_EURUSD"].cci
         # New minute with very different price moves CCI
-        prov._buffers["OTC_EURUSD"].update(2.5, t0 + 30 * 60 + 60)
+        prov._buffers["OTC_EURUSD"].update(2.5, start_ts + 30 * 60 + 60)
         m2 = build_indicators_map_from_po(prov, symbols)
         cci2 = m2["OTC_EURUSD"].cci
         assert m1["OTC_EURUSD"] is not m2["OTC_EURUSD"]
@@ -256,7 +325,7 @@ class TestBuildIndicatorsFromPo:
 
     def test_s2_2_indicators_map_rebuilt_each_call_new_instances(self):
         prov = POWebSocketProvider()
-        seed_buffer_one_candle_per_minute(prov._buffers["OTC_EURUSD"], time.time() - 4000, 30)
+        seed_thirty_candles_fresh(prov._buffers["OTC_EURUSD"])
         symbols = ["OTC_EURUSD"]
         m1 = build_indicators_map_from_po(prov, symbols)
         m2 = build_indicators_map_from_po(prov, symbols)
