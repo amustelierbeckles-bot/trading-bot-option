@@ -347,7 +347,7 @@ class POWebSocketProvider:
 
         # Responde con upgrade a WebSocket (mensaje "40")
         await ws.send("40")
-        await asyncio.sleep(random.uniform(0.3, 0.8))
+        # Sin delay aquí: PO puede cerrar el socket si auth no llega de inmediato tras el "40"
 
         # Auth Socket.IO: payload solo usa session + isDemo (SSID/cookie ya en headers)
         if self._ssid:
