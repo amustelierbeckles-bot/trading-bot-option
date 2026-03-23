@@ -9,6 +9,7 @@ Incluye:
   - Long polling (_telegram_polling_loop)
 """
 import asyncio
+import html
 import logging
 import os
 from datetime import datetime, timedelta
@@ -128,16 +129,20 @@ async def send_pre_alert_telegram(pre_doc: dict) -> None:
     asset      = pre_doc.get("asset_name", "")
     conf_pct   = pre_doc.get("confluence_pct", 60)
     session    = pre_doc.get("session", "")
-    strategies = ", ".join(pre_doc.get("strategies_fired", []))
+    strategies = ", ".join(str(s) for s in pre_doc.get("strategies_fired", []))
     now_local  = fmt_time(datetime.utcnow())
 
+    asset_e = html.escape(str(asset))
+    session_e = html.escape(str(session))
+    strategies_e = html.escape(strategies)
+
     text = (
-        f"⏳ <b>PRE-ALERTA</b> — {asset}\n"
+        f"⏳ <b>PRE-ALERTA</b> — {asset_e}\n"
         f"{direction} | {conf_pct}% Confluencia\n\n"
         f"Condiciones formándose. Esté atento para una posible\n"
         f"operación en los próximos <b>2-3 minutos</b>.\n\n"
-        f"📊 Estrategias activas: <i>{strategies}</i>\n"
-        f"🕐 {now_local} | {session}"
+        f"📊 Estrategias activas: <i>{strategies_e}</i>\n"
+        f"🕐 {now_local} | {session_e}"
     )
 
     try:
@@ -176,12 +181,15 @@ async def send_signal_telegram(signal: dict, app=None) -> Optional[int]:
     # Auto-registro desactivado — solo se registran trades cuando el usuario confirma
     audit_id = None
 
+    asset_safe = html.escape(str(signal.get("asset_name", "")))
+    session_safe = html.escape(str(signal.get("session", "")))
+
     text = (
         f"{header}\n\n"
-        f"<b>{signal.get('asset_name', '')}</b>\n"
+        f"<b>{asset_safe}</b>\n"
         f"{direction}\n\n"
         f"Score: <b>{score_pct}%</b> | CCI: <b>{signal.get('cci', 0):.0f}</b>\n"
-        f"Payout: <b>{signal.get('payout', 85):.0f}%</b> | {signal.get('session', '')}\n"
+        f"Payout: <b>{signal.get('payout', 85):.0f}%</b> | {session_safe}\n"
         f"Entrada: <b>{fmt_time(now)}</b>\n\n"
         f"⏰ <b>2 minutos | El bot verificará el resultado automáticamente</b>\n"
         f"Pulsa si decides operar:"
@@ -280,9 +288,11 @@ async def handle_tg_callback(callback: dict, app):
             except Exception as e:
                 logger.warning("⚠️  No se pudo registrar trade: %s", e)
 
+        asset_esc = html.escape(str(asset))
+        stype_esc = html.escape(str(stype))
         await tg_edit_message(chat_id, msg_id,
             f"✅ <b>Operación confirmada — Auditoría activa</b>\n\n"
-            f"<b>{asset}</b> — {stype}\n"
+            f"<b>{asset_esc}</b> — {stype_esc}\n"
             f"🕐 Entrada: <b>{fmt_time(confirm_time)}</b>\n\n"
             f"⏳ Verificando resultado automáticamente en 2 minutos...\n"
             f"<i>También podrás corregir el resultado si es necesario.</i>"
@@ -298,9 +308,11 @@ async def handle_tg_callback(callback: dict, app):
     elif parts[0] == "ignore":
         trade_key = str(msg_id)
         signal    = _tg_active_trades.pop(trade_key, {}).get("signal", {})
+        ign_asset = html.escape(str(signal.get("asset_name", "")))
+        ign_type = html.escape(str(signal.get("type", "")))
         await tg_edit_message(chat_id, msg_id,
             f"⏭ <b>Señal ignorada</b>\n"
-            f"{signal.get('asset_name', '')} — {signal.get('type', '')}\n"
+            f"{ign_asset} — {ign_type}\n"
             f"<i>Esperando próxima señal...</i>"
         )
 
@@ -321,9 +333,11 @@ async def handle_tg_callback(callback: dict, app):
                 pass
 
         icon = "✅" if outcome == "win" else "❌"
+        res_asset = html.escape(str(signal.get("asset_name", "")))
+        res_type = html.escape(str(signal.get("type", "")))
         await tg_edit_message(chat_id, msg_id,
             f"📊 <b>Auditoría completada: {'[W]' if outcome=='win' else '[L]'}</b>\n\n"
-            f"{signal.get('asset_name', '')} — {signal.get('type', '')}\n"
+            f"{res_asset} — {res_type}\n"
             f"{icon} Resultado corregido manualmente ✓"
         )
         _tg_active_trades.pop(trade_key, None)
