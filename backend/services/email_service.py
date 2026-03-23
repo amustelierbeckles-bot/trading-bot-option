@@ -4,6 +4,7 @@ Arquitectura: Clean Service Layer, async-safe, no bloquea WebSocket ni Auto-scan
 """
 
 import os
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -338,12 +339,15 @@ class EmailService:
             data = await self._aggregate_signals()
             html = _build_html(data)
 
-            resend.Emails.send({
-                "from": "Trading Bot <onboarding@resend.dev>",
-                "to": [target],
-                "subject": f"🧪 [TEST] Reporte Trading Bot — {datetime.now(TZ_LOCAL).strftime('%d/%m/%Y %H:%M')}",
-                "html": html,
-            })
+            await asyncio.to_thread(
+                resend.Emails.send,
+                {
+                    "from": "Trading Bot <onboarding@resend.dev>",
+                    "to": [target],
+                    "subject": f"🧪 [TEST] Reporte Trading Bot — {datetime.now(TZ_LOCAL).strftime('%d/%m/%Y %H:%M')}",
+                    "html": html,
+                },
+            )
             return {"success": True, "recipient": target, "signals_included": data["total_signals"]}
         except Exception as e:
             logger.error("❌ Error en test email: %s", e)

@@ -65,8 +65,9 @@ async def get_win_rate(request: Request):
     redis     = getattr(request.app.state, "redis", None)
     use_mongo = request.app.state.use_mongo
 
-    h_key = hour_bucket()
-    d_key = day_bucket()
+    now_buckets = datetime.utcnow()
+    h_key = hour_bucket(now_buckets)
+    d_key = day_bucket(now_buckets)
 
     cached_hour = await wr_cache_get(redis, h_key) if redis else None
     cached_day  = await wr_cache_get(redis, d_key) if redis else None

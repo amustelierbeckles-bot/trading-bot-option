@@ -206,3 +206,24 @@ async def test_stats_endpoint_accepts_unknown_params(client):
 
     response = client.get("/api/stats?window=99h&foo=bar")
     assert response.status_code == 200
+
+
+# ── Endpoint /api/stats/win-rate ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_win_rate_endpoint_no_crash(client):
+    """GET /api/stats/win-rate no debe crashear (hour_bucket/day_bucket con datetime)."""
+    import server
+    server.app.state.use_mongo = False
+    server.app.state.redis = None  # forzar rama computed sin mock async de Redis
+    server.app.state.trades_store = []
+    server.app.state.signals_store = []
+
+    response = client.get("/api/stats/win-rate")
+    assert response.status_code == 200
+    data = response.json()
+    assert "hourly" in data
+    assert "daily" in data
+    assert data["source"] == "computed"
+    assert "win_rate" in data["hourly"]
+    assert "win_rate" in data["daily"]
