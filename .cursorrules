@@ -427,3 +427,20 @@ Fecha: 19/03/2026
 | Ejecutar sin confirmación | Prompt + disciplina |
 | No verificar en VPS | Requiere intervención usuario o CI/CD |
 | Ambigüedad confirmación | Definir excepciones en prompt |
+
+---
+
+### CUSTODIA ACTIVA
+El agente custodio se activa con: `Custodia: [descripción]`
+Archivo de referencia: CUSTODIA.md
+
+Al inicio de cada sesión verificar:
+- ¿Hay cambios pendientes de verificación en producción?
+- ¿El último deploy fue confirmado con logs reales?
+- ¿El CI está verde?
+
+Patrones de alerta automática:
+- scan=0.0s → buffers vacíos
+- Loop reconexión → IP o SSID
+- ImportError → imports desactualizados
+- Score/CCI congelado → datos no reales
