@@ -127,6 +127,12 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             expiry_seconds = 120,
             is_demo        = is_demo,
         )
+        if not result or result.get("status") == "error":
+            logger.error(
+                "❌ place_trade falló: %s",
+                result.get("reason", "unknown") if isinstance(result, dict) else "sin respuesta",
+            )
+            return
 
         now    = datetime.utcnow()
         sig_id = doc.get("id", "")
@@ -155,10 +161,12 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
                     s["executed_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                     break
 
+        _oid = result.get("order_id")
+        order_log = (str(_oid)[:16] if _oid is not None else "?")
         logger.info(
             "🤖 Auto-exec | %s %s $%.0f | order=%s | status=%s",
             direction.upper(), symbol, amount,
-            result.get("order_id", "?")[:16], result.get("status", "?")
+            order_log, result.get("status", "?")
         )
 
         audit_id = None
@@ -198,7 +206,7 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             f"Dirección: <b>{direction.upper()}</b>\n"
             f"Monto: <b>${amount:.0f}</b>\n"
             f"Score: <b>{quality_score*100:.0f}%</b>\n"
-            f"Orden: <code>{result.get('order_id','?')[:12]}</code>\n"
+            f"Orden: <code>{str(result.get('order_id') or '?')[:12]}</code>\n"
             f"Estado: <code>{result.get('status','?')}</code>\n\n"
             f"⏰ Verificando resultado en 2 minutos automáticamente..."
         )
