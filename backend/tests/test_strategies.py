@@ -1,5 +1,5 @@
 import pytest
-from strategies import CCIAlligatorStrategy, RangeBreakoutStrategy
+from strategies import CCIAlligatorStrategy, RangeBreakoutStrategy, MACDStochasticStrategy
 from scoring import orthogonal_score as _orthogonal_score, _TOTAL_GROUPS
 
 
@@ -7,12 +7,12 @@ class MockIndicatorSet:
     """IndicatorSet mínimo para tests unitarios de estrategias."""
     def __init__(self, cci=0, trend="neutral", is_real=True,
                  rsi=50, price=1.0820, ema21=1.0800,
-                 atr=0.0010, atr_pct=0.09, macd_hist=0.0):
+                 atr=0.0010, atr_pct=0.09, macd_hist=0.0, stoch_k=50):
         self.cci       = cci
         self.trend     = trend
         self.is_real   = is_real
         self.rsi       = rsi
-        self.stoch_k   = 50
+        self.stoch_k   = stoch_k
         self.macd_line = 0.0
         self.macd_hist = macd_hist
         self.ema9      = price
@@ -137,6 +137,54 @@ def test_range_breakout_no_signal_simulated_data():
     strategy = RangeBreakoutStrategy()
     ind = MockIndicatorSet(is_real=False, price=1.0820, ema21=1.0800)
     assert strategy.generate_signal(ind) is None
+
+
+# ── MACD + Stochastic ─────────────────────────────────────────────────────────
+
+def test_macd_stoch_agotamiento_alcista_es_put():
+    """Stoch >= 95 con MACD positivo = agotamiento = PUT (no CALL)."""
+    strategy = MACDStochasticStrategy()
+    ind = MockIndicatorSet(stoch_k=96.0, macd_hist=0.0005, cci=10)
+    sig = strategy.generate_signal(ind)
+    assert sig is not None
+    assert sig["type"] == "PUT"
+    assert "agotamiento alcista extremo" in sig["reason"]
+    assert "MACD hist > 0" in sig["reason"]
+    assert sig["confidence"] >= strategy.min_confidence
+
+
+def test_macd_stoch_agotamiento_bajista_es_call():
+    """Stoch <= 5 con MACD negativo = agotamiento = CALL (no PUT)."""
+    strategy = MACDStochasticStrategy()
+    ind = MockIndicatorSet(stoch_k=3.0, macd_hist=-0.0005, cci=-10)
+    sig = strategy.generate_signal(ind)
+    assert sig is not None
+    assert sig["type"] == "CALL"
+    assert "agotamiento bajista extremo" in sig["reason"]
+    assert "MACD hist < 0" in sig["reason"]
+    assert sig["confidence"] >= strategy.min_confidence
+
+
+def test_macd_stoch_sobrevendido_macd_alcista_es_call():
+    """Stoch < 20 + histograma MACD > 0 → CALL (zona clásica)."""
+    strategy = MACDStochasticStrategy()
+    ind = MockIndicatorSet(stoch_k=15.0, macd_hist=0.0003, cci=0)
+    sig = strategy.generate_signal(ind)
+    assert sig is not None
+    assert sig["type"] == "CALL"
+    assert "sobrevendido" in sig["reason"]
+    assert sig["confidence"] >= strategy.min_confidence
+
+
+def test_macd_stoch_sobrecomprado_macd_bajista_es_put():
+    """Stoch > 80 + histograma MACD < 0 → PUT (zona clásica)."""
+    strategy = MACDStochasticStrategy()
+    ind = MockIndicatorSet(stoch_k=85.0, macd_hist=-0.0003, cci=0)
+    sig = strategy.generate_signal(ind)
+    assert sig is not None
+    assert sig["type"] == "PUT"
+    assert "sobrecomprado" in sig["reason"]
+    assert sig["confidence"] >= strategy.min_confidence
 
 
 # ── Orthogonal Score ──────────────────────────────────────────────────────────

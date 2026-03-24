@@ -165,8 +165,8 @@ class RSIBollingerStrategy(TradingStrategy):
 
 class MACDStochasticStrategy(TradingStrategy):
     """
-    Estocástico extremo + histograma MACD para confirmar impulso real.
-    Modo estándar y modo momentum extremo (Stoch ≥ 95 / ≤ 5).
+    Estocástico + histograma MACD: zonas de reversión y agotamiento extremo.
+    Stoch ≥95 / ≤5: agotamiento con confirmación MACD; 20/80: giro clásico.
     """
     def __init__(self):
         super().__init__("MACD + Stochastic", 1.0)
@@ -178,12 +178,12 @@ class MACDStochasticStrategy(TradingStrategy):
 
             if stoch >= 95 and histogram > 0:
                 conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
-                return {"type": "CALL", "confidence": conf, "cci": round(ind.cci, 1),
-                        "reason": f"Stoch {stoch:.1f} extremo alcista + MACD histograma positivo"}
+                return {"type": "PUT", "confidence": conf, "cci": round(ind.cci, 1),
+                        "reason": f"Stoch {stoch:.1f} agotamiento alcista extremo + MACD hist > 0"}
             if stoch <= 5 and histogram < 0:
                 conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
-                return {"type": "PUT",  "confidence": conf, "cci": round(ind.cci, 1),
-                        "reason": f"Stoch {stoch:.1f} extremo bajista + MACD histograma negativo"}
+                return {"type": "CALL", "confidence": conf, "cci": round(ind.cci, 1),
+                        "reason": f"Stoch {stoch:.1f} agotamiento bajista extremo + MACD hist < 0"}
 
             if stoch < 20 and histogram > 0:
                 conf = _conf_from_extreme(stoch, 0, 20, 80, 100)
