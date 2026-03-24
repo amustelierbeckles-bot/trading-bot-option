@@ -57,7 +57,7 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             wr_filter["po_is_demo"] = False
 
         if app.state.use_mongo:
-            cursor = app.state.db.signals.find(wr_filter).sort("created_at", -1).limit(auto_min_ops)
+            cursor = app.state.db.trades.find(wr_filter).sort("created_at", -1).limit(auto_min_ops)
             recent = await cursor.to_list(auto_min_ops)
         else:
             def _wr_match(t: dict) -> bool:
@@ -169,32 +169,39 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             order_log, result.get("status", "?")
         )
 
-        audit_id = None
+        audit_id  = None
+        trade_doc = {
+            "signal_id":         doc.get("id", ""),
+            "symbol":            symbol,
+            "asset_name":        doc.get("asset_name", symbol),
+            "type":              direction.upper(),
+            "entry_price":       doc.get("entry_price", doc.get("price", 0)),
+            "quality_score":     quality_score,
+            "execution_mode":    "auto",
+            "amount":            amount,
+            "po_order_id":       result.get("order_id"),
+            "po_status":         result.get("status"),
+            "audit_confidence":  "high",
+            "result":            None,
+            "created_at":        now,
+            "session":           doc.get("session", ""),
+            "strategies":        doc.get("strategies_agreeing", []),
+            "po_is_demo":        is_demo,
+            "auto_execute_mode": auto_mode,
+            "source":            "auto_exec",
+        }
         if app and app.state.use_mongo:
             try:
-                trade_doc = {
-                    "symbol":            symbol,
-                    "asset_name":        doc.get("asset_name", symbol),
-                    "type":              direction.upper(),
-                    "entry_price":       doc.get("entry_price", doc.get("price", 0)),
-                    "quality_score":     quality_score,
-                    "execution_mode":    "auto",
-                    "amount":            amount,
-                    "po_order_id":       result.get("order_id"),
-                    "po_status":         result.get("status"),
-                    "audit_confidence":  "high",
-                    "result":            None,
-                    "created_at":        now,
-                    "session":           doc.get("session", ""),
-                    "strategies":        doc.get("strategies_agreeing", []),
-                    "po_is_demo":        is_demo,
-                    "auto_execute_mode": auto_mode,
-                }
-                ins      = await app.state.db.signals.insert_one(trade_doc)
+                ins      = await app.state.db.trades.insert_one(trade_doc)
                 audit_id = str(ins.inserted_id)
-                logger.info("📝 Trade auto-exec registrado | audit_id=%s", audit_id)
+                logger.info("📝 Trade auto-exec registrado en trades | audit_id=%s", audit_id)
             except Exception as e:
                 logger.warning("⚠️  No se pudo registrar auto-exec: %s", e)
+        else:
+            trade_doc["id"] = f"auto_{int(now.timestamp() * 1000)}"
+            trade_doc["created_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            app.state.trades_store.append(trade_doc)
+            audit_id = trade_doc["id"]
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         token   = os.getenv("TELEGRAM_BOT_TOKEN", "")

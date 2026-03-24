@@ -1,5 +1,5 @@
 # CONTEXT.md — Estado actual del proyecto
-## Última actualización: 21/03/2026
+## Última actualización: 24/03/2026
 
 ---
 
@@ -48,9 +48,10 @@ Tras cambiar solo `.env`: a veces basta recrear el contenedor; si cambian depend
 ---
 
 ## PENDIENTES
-- 🟡 **Ticks en producción:** validar en horario de scan que el buffer recibe datos (no solo conexión + subscribe).
-- 🟢 **AUTO_EXECUTE:** WR ~50% vs umbral **55%** — decidir estrategia (seguir acumulando ops o ajustar umbral).
-- 🟡 **Opcional:** commitear `.agents/skills/` si deben vivir en el repo.
+- 🟡 **Ticks en producción:** verificar en ventana 09:30 si aparece "tick binary" en logs (con LOG_LEVEL=DEBUG). Si aparecen "unknown event", revisar. Revertir a WARNING luego.
+- 🟡 **Migración datos históricos:** ejecutar `scripts/migrate_signals_to_trades.js` en VPS UNA VEZ con `mongosh`. Mueve trades auto-exec almacenados erróneamente en `db.signals` hacia `db.trades`. Script idempotente.
+- 🟡 **PRÓXIMA SESIÓN 1:** Alerta Telegram cuando PO lleva N ciclos sin enviar ticks.
+- 🟡 **PRÓXIMA SESIÓN 2:** Corregir lógica invertida en MACDStoch.
 
 ---
 

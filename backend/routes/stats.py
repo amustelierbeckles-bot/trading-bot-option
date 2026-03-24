@@ -24,6 +24,19 @@ def _parse_naive_utc(ts: str) -> datetime:
     return datetime.fromisoformat(ts.rstrip("Z").split("+")[0])
 
 
+def _wr_breakdown(trades: list) -> dict:
+    """Calcula WR total + desglose auto/manual a partir de una lista de trades."""
+    def _calc(subset):
+        total = len(subset)
+        wins  = sum(1 for t in subset if t.get("result") == "win")
+        return {"win_rate": round(wins / total * 100, 1) if total else 0.0,
+                "wins": wins, "losses": total - wins, "total": total}
+
+    auto   = [t for t in trades if t.get("source") == "auto_exec"]
+    manual = [t for t in trades if t.get("source") != "auto_exec"]
+    return {**_calc(trades), "auto": _calc(auto), "manual": _calc(manual)}
+
+
 @router.get("/api/stats")
 async def get_stats(request: Request):
     """Estadísticas globales agregadas: señales, WR, tasa de error de datos, etc."""
@@ -44,24 +57,24 @@ async def get_stats(request: Request):
         recent_trades   = [t for t in reversed(request.app.state.trades_store)
                            if t.get("result") in ("win", "loss")][:200]
 
-    total   = len(recent_trades)
-    wins    = sum(1 for t in recent_trades if t.get("result") == "win")
-    wr      = round(wins / total * 100, 1) if total else 0.0
+    breakdown = _wr_breakdown(recent_trades)
 
     return {
-        "period":        "24h",
-        "total_signals": total_signals,
-        "total_trades":  total_trades,
-        "win_rate":      wr,
-        "wins":          wins,
-        "losses":        total - wins,
+        "period":           "24h",
+        "total_signals":    total_signals,
+        "total_trades":     total_trades,
+        "win_rate":         breakdown["win_rate"],
+        "wins":             breakdown["wins"],
+        "losses":           breakdown["losses"],
+        "win_rate_auto":    breakdown["auto"]["win_rate"],
+        "win_rate_manual":  breakdown["manual"]["win_rate"],
         "dynamic_threshold": round(get_dynamic_threshold(), 4),
     }
 
 
 @router.get("/api/stats/win-rate")
 async def get_win_rate(request: Request):
-    """Win rate por hora y por día, con caché Redis."""
+    """Win rate por hora y por día, con caché Redis. Incluye desglose auto/manual."""
     redis     = getattr(request.app.state, "redis", None)
     use_mongo = request.app.state.use_mongo
 
@@ -91,14 +104,8 @@ async def get_win_rate(request: Request):
                     if t.get("result") in ("win", "loss") and
                     _parse_naive_utc(t.get("created_at", "2000-01-01T00:00:00Z")) >= day_ago]
 
-    def _calc(trades):
-        total = len(trades)
-        wins  = sum(1 for t in trades if t.get("result") == "win")
-        return {"win_rate": round(wins / total * 100, 1) if total else 0.0,
-                "wins": wins, "losses": total - wins, "total": total}
-
-    hourly = _calc(h_trades)
-    daily  = _calc(d_trades)
+    hourly = _wr_breakdown(h_trades)
+    daily  = _wr_breakdown(d_trades)
 
     if redis:
         await wr_cache_set(redis, h_key, hourly)
@@ -206,7 +213,7 @@ async def get_audit_stats(request: Request):
             "created_at": {"$gte": day_ago},
         })
         auto_exec_today = await db.trades.count_documents({
-            "source": "auto_execute",
+            "source": "auto_exec",
             "created_at": {"$gte": day_ago},
         })
     else:
@@ -216,7 +223,7 @@ async def get_audit_stats(request: Request):
                               if t.get("source") == "auto_audit" and t.get("result") in ("win", "loss")
                               and _parse_naive_utc(t.get("created_at", "2000-01-01")) >= day_ago)
         auto_exec_today = sum(1 for t in request.app.state.trades_store
-                              if t.get("source") == "auto_execute"
+                              if t.get("source") == "auto_exec"
                               and _parse_naive_utc(t.get("created_at", "2000-01-01")) >= day_ago)
 
     all_trades_with_result = (
