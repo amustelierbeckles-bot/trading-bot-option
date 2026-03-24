@@ -671,7 +671,7 @@ class POWebSocketProvider:
         }])
 
         # Crea future para esperar la confirmación
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fut  = loop.create_future()
         self._pending_orders[request_id] = fut
 
