@@ -98,6 +98,9 @@ async def lifespan(app: FastAPI):
             await r.ping()
             app.state.redis = r
             logger.info("✅ Redis conectado")
+            from circuit_breaker import cb_bind_redis, cb_load_state
+            cb_bind_redis(r)
+            await cb_load_state(r)
         except Exception as re:
             logger.warning("⚠️  Redis no disponible (%s) — caché in-memory activo", re)
 
@@ -108,7 +111,22 @@ async def lifespan(app: FastAPI):
         try:
             from po_websocket import init_po_provider
             is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
-            po = init_po_provider(ssid=po_ssid, is_demo=is_demo)
+            _po_uid_raw = (os.getenv("PO_USER_ID") or "").strip()
+            try:
+                po_user_id = int(_po_uid_raw) if _po_uid_raw else 0
+            except ValueError:
+                po_user_id = 0
+                logger.warning(
+                    "⚠️  PO_USER_ID inválido (%r) — usando 0 (auth WebSocket omitido)",
+                    _po_uid_raw,
+                )
+            po_secret = (os.getenv("PO_SECRET") or "").strip()
+            po = init_po_provider(
+                ssid=po_ssid,
+                is_demo=is_demo,
+                user_id=po_user_id,
+                secret=po_secret,
+            )
             await po.start()
             app.state.po_provider = po
             logger.info("🔌 PO WebSocket iniciado | modo=%s", "DEMO" if is_demo else "REAL")
