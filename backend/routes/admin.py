@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 
 from circuit_breaker import cb_get_state
 from market_session import get_market_session
+from po_websocket import OTC_SYMBOL_MAP
 
 router = APIRouter()
 
@@ -51,6 +52,21 @@ async def health_check(request: Request):
     now     = datetime.utcnow()
     session = get_market_session(now.hour, now.minute)
     cb      = cb_get_state()
+    po_prov = getattr(request.app.state, "po_provider", None)
+    if po_prov:
+        po_status = {
+            "connected":           bool(getattr(po_prov, "is_connected", False)),
+            "ready_pairs":         sum(1 for s in OTC_SYMBOL_MAP if po_prov.is_ready(s)),
+            "last_tick_age_seconds": po_prov.seconds_since_last_tick(),
+            "kill_switch":         bool(getattr(po_prov, "_kill_switch_active", False)),
+        }
+    else:
+        po_status = {
+            "connected":           False,
+            "ready_pairs":         0,
+            "last_tick_age_seconds": None,
+            "kill_switch":         False,
+        }
     return {
         "status":              "healthy",
         "timestamp":           now.isoformat(),
@@ -60,6 +76,7 @@ async def health_check(request: Request):
         "session_description": session["description"],
         "circuit_breaker":     cb,
         "session_pairs":       len(session["pairs"]),
+        "po_websocket":        po_status,
     }
 
 

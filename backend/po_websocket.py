@@ -839,6 +839,19 @@ class POWebSocketProvider:
         buf = self._buffers.get(otc_symbol)
         return buf.is_ready if buf else False
 
+    def seconds_since_last_tick(self) -> Optional[float]:
+        """
+        Segundos transcurridos desde el tick más reciente en cualquier par.
+        None si nunca se recibió tick en vivo (last_update == 0 en todos).
+        """
+        latest = 0.0
+        for buf in self._buffers.values():
+            if buf.last_update > latest:
+                latest = buf.last_update
+        if latest <= 0:
+            return None
+        return round(time.time() - latest, 3)
+
     def get_status(self) -> dict:
         """Estado completo del proveedor para el dashboard."""
         ready_pairs = sum(
