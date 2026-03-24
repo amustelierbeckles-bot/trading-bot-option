@@ -6,13 +6,27 @@ from typing import Dict, Optional
 from data_provider import IndicatorSet
 
 ASSET_PRICES: Dict[str, float] = {
-    "OTC_EURUSD": 1.0823, "OTC_GBPUSD": 1.2654, "OTC_USDJPY": 150.12,
-    "OTC_USDCHF": 0.8823, "OTC_AUDUSD": 0.6523, "OTC_USDCAD": 1.3512,
-    "OTC_NZDUSD": 0.5912, "OTC_EURJPY": 162.45, "OTC_EURGBP": 0.8556,
-    "OTC_EURAUD": 1.6589, "OTC_EURCAD": 1.4623, "OTC_EURCHF": 0.9545,
-    "OTC_GBPJPY": 189.90, "OTC_GBPAUD": 1.9398, "OTC_GBPCAD": 1.7098,
-    "OTC_GBPCHF": 1.1162, "OTC_AUDJPY": 97.90,  "OTC_AUDCAD": 0.8812,
-    "OTC_CADJPY": 111.09, "OTC_CHFJPY": 170.16,
+    # Actualizado: marzo 2026
+    "OTC_EURUSD": 1.0820,
+    "OTC_GBPUSD": 1.2940,
+    "OTC_USDJPY": 149.50,
+    "OTC_USDCHF": 0.8850,
+    "OTC_AUDUSD": 0.6280,
+    "OTC_USDCAD": 1.3950,
+    "OTC_NZDUSD": 0.5720,
+    "OTC_EURJPY": 161.80,
+    "OTC_EURGBP": 0.8360,
+    "OTC_EURAUD": 1.7230,
+    "OTC_EURCAD": 1.5094,
+    "OTC_EURCHF": 0.9576,
+    "OTC_GBPJPY": 193.50,
+    "OTC_GBPAUD": 2.0605,
+    "OTC_GBPCAD": 1.8051,
+    "OTC_GBPCHF": 1.1452,
+    "OTC_AUDJPY": 93.89,
+    "OTC_AUDCAD": 0.8761,
+    "OTC_CADJPY": 107.17,
+    "OTC_CHFJPY": 168.93,
 }
 
 # Estado del generador de precios con momentum persistente
