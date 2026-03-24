@@ -28,6 +28,10 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
     - Circuit Breaker no activo
     - WebSocket PO conectado y autenticado
     - Win Rate de últimas ops >= AUTO_EXECUTE_MIN_WR (si hay suficientes datos)
+
+    Variables: AUTO_EXECUTE_MIN_WR, AUTO_EXECUTE_MIN_OPS, AUTO_EXECUTE_AMOUNT,
+    AUTO_EXECUTE_MODE (demo|real). Si AUTO_EXECUTE_MODE=demo, place_trade fuerza
+    cuenta demo y el WR solo cuenta ops con po_is_demo=true (no mezcla con REAL).
     """
     from circuit_breaker import cb_is_blocked
     from services.audit_service import autonomous_audit
@@ -41,19 +45,33 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
 
         auto_min_wr  = float(os.getenv("AUTO_EXECUTE_MIN_WR", "55.0"))
         auto_min_ops = int(os.getenv("AUTO_EXECUTE_MIN_OPS", "20"))
+        auto_mode    = os.getenv("AUTO_EXECUTE_MODE", "demo").lower()
+
+        wr_filter = {
+            "result":         {"$in": ["W", "L", "win", "loss"]},
+            "execution_mode": "auto",
+        }
+        if auto_mode == "demo":
+            wr_filter["po_is_demo"] = True
+        elif auto_mode == "real":
+            wr_filter["po_is_demo"] = False
 
         if app.state.use_mongo:
-            cursor = app.state.db.signals.find({
-                "result":         {"$in": ["W", "L", "win", "loss"]},
-                "execution_mode": "auto",
-            }).sort("created_at", -1).limit(auto_min_ops)
+            cursor = app.state.db.signals.find(wr_filter).sort("created_at", -1).limit(auto_min_ops)
             recent = await cursor.to_list(auto_min_ops)
         else:
-            recent = [
-                t for t in app.state.trades_store
-                if t.get("result") in ("W", "L", "win", "loss")
-                and t.get("execution_mode") == "auto"
-            ][-auto_min_ops:]
+            def _wr_match(t: dict) -> bool:
+                if t.get("result") not in ("W", "L", "win", "loss"):
+                    return False
+                if t.get("execution_mode") != "auto":
+                    return False
+                if auto_mode == "demo":
+                    return t.get("po_is_demo") is True
+                if auto_mode == "real":
+                    return t.get("po_is_demo") is False
+                return True
+
+            recent = [t for t in app.state.trades_store if _wr_match(t)][-auto_min_ops:]
 
         if len(recent) >= auto_min_ops:
             wins      = sum(1 for t in recent if t.get("result") in ("W", "win"))
@@ -96,7 +114,11 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
         symbol    = doc.get("symbol", "")
         direction = doc.get("type", "").lower()
         amount    = float(os.getenv("AUTO_EXECUTE_AMOUNT", "100"))
-        is_demo   = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
+        # Guard: AUTO_EXECUTE_MODE=demo → siempre orden demo en PO (no dinero real).
+        if auto_mode == "demo":
+            is_demo = True
+        else:
+            is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
 
         result = await po.place_trade(
             symbol         = symbol,
@@ -109,10 +131,12 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
         now    = datetime.utcnow()
         sig_id = doc.get("id", "")
         update = {
-            "execution_mode":  "auto",
-            "executed_at":     now,
-            "executed_amount": amount,
-            "po_order_id":     result.get("order_id"),
+            "execution_mode":    "auto",
+            "executed_at":       now,
+            "executed_amount":   amount,
+            "po_order_id":       result.get("order_id"),
+            "po_is_demo":        is_demo,
+            "auto_execute_mode": auto_mode,
         }
 
         if app.state.use_mongo and sig_id:
@@ -141,20 +165,22 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
         if app and app.state.use_mongo:
             try:
                 trade_doc = {
-                    "symbol":          symbol,
-                    "asset_name":      doc.get("asset_name", symbol),
-                    "type":            direction.upper(),
-                    "entry_price":     doc.get("entry_price", doc.get("price", 0)),
-                    "quality_score":   quality_score,
-                    "execution_mode":  "auto",
-                    "amount":          amount,
-                    "po_order_id":     result.get("order_id"),
-                    "po_status":       result.get("status"),
-                    "audit_confidence": "high",
-                    "result":          None,
-                    "created_at":      now,
-                    "session":         doc.get("session", ""),
-                    "strategies":      doc.get("strategies_agreeing", []),
+                    "symbol":            symbol,
+                    "asset_name":        doc.get("asset_name", symbol),
+                    "type":              direction.upper(),
+                    "entry_price":       doc.get("entry_price", doc.get("price", 0)),
+                    "quality_score":     quality_score,
+                    "execution_mode":    "auto",
+                    "amount":            amount,
+                    "po_order_id":       result.get("order_id"),
+                    "po_status":         result.get("status"),
+                    "audit_confidence":  "high",
+                    "result":            None,
+                    "created_at":        now,
+                    "session":           doc.get("session", ""),
+                    "strategies":        doc.get("strategies_agreeing", []),
+                    "po_is_demo":        is_demo,
+                    "auto_execute_mode": auto_mode,
                 }
                 ins      = await app.state.db.signals.insert_one(trade_doc)
                 audit_id = str(ins.inserted_id)
@@ -164,8 +190,10 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        demo_tag = "🏷 <b>DEMO</b> — cuenta de práctica PO\n" if is_demo else ""
         auto_msg_text = (
-            f"🤖 <b>AUTO-EXEC</b>\n\n"
+            f"🤖 <b>AUTO-EXEC</b>\n"
+            f"{demo_tag}\n"
             f"Par: <b>{doc.get('asset_name', symbol)}</b>\n"
             f"Dirección: <b>{direction.upper()}</b>\n"
             f"Monto: <b>${amount:.0f}</b>\n"
@@ -329,13 +357,15 @@ async def _auto_scan_loop(app):
             # Siembra los buffers de PO con 35 velas históricas de TwelveData
             # UNA sola vez por par. Después, el buffer se mantiene vivo con ticks
             # y nunca vuelve a necesitar TwelveData para indicadores.
+            # Máximo MAX_TD_FALLBACK_PER_CYCLE pares por ciclo: el plan gratuito de TD
+            # limita ~8 req/min; disparar 20 bootstrap en segundos agotaba el cupo (429).
             if po_prov and provider and provider.is_configured:
                 from data_provider import CandleData as _CD
                 needs_boot = [
                     sym for sym in pairs_to_scan
                     if not po_prov.is_ready(sym)
                     and not getattr(app.state, "_po_bootstrapped", set()).issuperset({sym})
-                ]
+                ][:MAX_TD_FALLBACK_PER_CYCLE]
                 if needs_boot:
                     if not hasattr(app.state, "_po_bootstrapped"):
                         app.state._po_bootstrapped = set()
