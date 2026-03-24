@@ -13,6 +13,10 @@ from typing import Optional
 
 _last_wr_blocked: bool = False
 
+# Alerta Telegram si PO no entrega ticks en N ciclos seguidos (INTERVAL ~120s → 5 ≈ 10 min).
+_po_no_data_cycles: int = 0
+PO_NO_DATA_ALERT_CYCLES: int = 5
+
 # Rotación round-robin para fallback Twelve Data cuando PO no está listo (ver CONTEXT.md).
 _td_fallback_queue: deque = deque()
 
@@ -454,6 +458,22 @@ async def _auto_scan_loop(app):
                             if ind is None:
                                 continue
                             indicators_map[sym] = ind
+
+            global _po_no_data_cycles
+
+            if po_ready == 0 and po_prov and not po_prov._kill_switch_active:
+                _po_no_data_cycles += 1
+                if _po_no_data_cycles == PO_NO_DATA_ALERT_CYCLES:
+                    from services.telegram_service import send_telegram
+                    asyncio.create_task(send_telegram(
+                        f"⚠️ PO WebSocket sin ticks\n"
+                        f"Llevan {PO_NO_DATA_ALERT_CYCLES} ciclos consecutivos "
+                        f"(~{PO_NO_DATA_ALERT_CYCLES * 2} min) sin datos reales de PO.\n"
+                        f"El bot opera con TwelveData como fallback.\n"
+                        f"Verifica el SSID o el proxy."
+                    ))
+            else:
+                _po_no_data_cycles = 0
 
             fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
             td_fallback   = len(pairs_to_scan) - po_ready
