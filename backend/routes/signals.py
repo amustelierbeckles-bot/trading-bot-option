@@ -27,8 +27,7 @@ from calibration import get_dynamic_threshold
 router = APIRouter()
 
 
-def _parse_naive_utc(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.rstrip("Z").split("+")[0])
+from utils import _parse_naive_utc
 
 
 async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):

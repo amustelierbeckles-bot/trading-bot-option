@@ -20,8 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _parse_naive_utc(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.rstrip("Z").split("+")[0])
+from utils import _parse_naive_utc
 
 
 def _wr_breakdown(trades: list) -> dict:
