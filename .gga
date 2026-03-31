@@ -1,0 +1,17 @@
+# Gentleman Guardian Angel Configuration
+
+PROVIDER="claude"
+
+# Python backend + JS/JSX frontend
+FILE_PATTERNS="*.py,*.js,*.jsx,*.ts,*.tsx"
+
+# Excluir tests y archivos generados
+EXCLUDE_PATTERNS="*.test.js,*.spec.js,*.test.tsx,*.spec.tsx,*.d.ts"
+
+RULES_FILE="AGENTS.md"
+
+STRICT_MODE="true"
+
+TIMEOUT="300"
+
+PR_BASE_BRANCH="main"
