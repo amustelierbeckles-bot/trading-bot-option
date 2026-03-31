@@ -446,7 +446,7 @@ class POWebSocketProvider:
             return
 
         if raw.startswith("40"):
-            logger.debug("Socket.IO conectado (40)")
+            logger.info("🔍 Socket.IO msg-40 raw | %s", raw[:200])
             return
 
         # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
