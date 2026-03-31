@@ -17,6 +17,7 @@ import logging
 import os
 import random
 import time
+import urllib.parse
 from collections import defaultdict, deque
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
@@ -190,7 +191,7 @@ class POWebSocketProvider:
         is_demo: True para cuenta demo, False para cuenta real
         """
         global WS_URL
-        self._ssid       = ssid
+        self._ssid       = urllib.parse.unquote(ssid)   # H1: decodificar %3A, %7B, etc.
         self._ssid_configured_at = time.time()
         self._ssid_alert_sent    = False
         self._secret     = secret
@@ -350,6 +351,9 @@ class POWebSocketProvider:
         # Sin delay aquí: PO puede cerrar el socket si auth no llega de inmediato tras el "40"
 
         # Auth Socket.IO: payload solo usa session + isDemo (SSID/cookie ya en headers)
+        # Crear el evento ANTES de enviar auth para no perder la confirmación de PO
+        self._auth_event = asyncio.Event()
+
         if self._ssid:
             auth_msg = json.dumps(["auth", {
                 "session": self._ssid,
@@ -357,13 +361,10 @@ class POWebSocketProvider:
             }])
             await ws.send(f"42{auth_msg}")
             logger.info("🔐 Auth enviado | isDemo=%d", 1 if self._is_demo else 0)
-            # Breve pausa para no saturar — la suscripción real espera el evento de auth.
-            await asyncio.sleep(0.3)
 
         # Suscripción diferida: esperamos confirmación de auth de PO antes de suscribir
         # pares (evita race condition con proxy SOCKS5 de alta latencia).
         # _subscribe_after_auth tiene fallback de 5s si PO no emite successauth/user_ready.
-        self._auth_event = asyncio.Event()
         asyncio.create_task(self._subscribe_after_auth(ws))
 
     async def _subscribe_pairs(self, ws):
@@ -570,8 +571,8 @@ class POWebSocketProvider:
             await self._handle_order_close(data)
 
         else:
-            snippet = str(data)[:100] if data is not None else ""
-            logger.debug("evento desconocido | %s | %s", event, snippet)
+            snippet = str(data)[:120] if data is not None else ""
+            logger.info("🔍 evento PO desconocido | %s | %s", event, snippet)
 
     async def _handle_price(self, data: dict):
         """Procesa tick de precio y actualiza buffer."""
