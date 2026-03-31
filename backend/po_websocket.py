@@ -357,10 +357,14 @@ class POWebSocketProvider:
             }])
             await ws.send(f"42{auth_msg}")
             logger.info("🔐 Auth enviado | isDemo=%d", 1 if self._is_demo else 0)
-            await asyncio.sleep(random.uniform(0.5, 1.2))
+            # Breve pausa para no saturar — la suscripción real espera el evento de auth.
+            await asyncio.sleep(0.3)
 
-        # Suscribirse a los pares con delay humano
-        await self._subscribe_pairs(ws)
+        # Suscripción diferida: esperamos confirmación de auth de PO antes de suscribir
+        # pares (evita race condition con proxy SOCKS5 de alta latencia).
+        # _subscribe_after_auth tiene fallback de 5s si PO no emite successauth/user_ready.
+        self._auth_event = asyncio.Event()
+        asyncio.create_task(self._subscribe_after_auth(ws))
 
     async def _subscribe_pairs(self, ws):
         """Suscripción progresiva con jitter humano."""
@@ -377,6 +381,35 @@ class POWebSocketProvider:
                 await asyncio.sleep(delay)
 
         logger.info("✅ Suscripción completa a %d pares", len(symbols))
+
+    async def _subscribe_after_auth(self, ws, timeout: float = 5.0):
+        """
+        Espera la confirmación de auth de PO (evento successauth / user_ready) antes
+        de enviar las suscripciones de pares.  Si PO no emite el evento en `timeout`
+        segundos, suscribe de todas formas como fallback — mismo comportamiento que
+        el sleep ciego anterior, pero disparado DESPUÉS de que el auth fue aceptado.
+
+        El guard `self._ws is ws` descarta la operación si el socket fue reemplazado
+        por una reconexión durante la espera.
+        """
+        auth_event = getattr(self, "_auth_event", None)
+        if auth_event:
+            try:
+                await asyncio.wait_for(auth_event.wait(), timeout=timeout)
+                logger.info("✅ Auth PO confirmado por servidor — suscribiendo pares")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⚠️  Auth PO sin confirmación en %.1fs — suscribiendo de todas formas (fallback)",
+                    timeout,
+                )
+        else:
+            # Sin evento (no debería ocurrir): esperar el timeout directamente
+            await asyncio.sleep(timeout)
+
+        if self._ws is not ws:
+            logger.debug("🔄 Socket reemplazado durante espera de auth — suscripción cancelada")
+            return
+        await self._subscribe_pairs(ws)
 
     # ── Handler de mensajes ───────────────────────────────────────────────────
 
@@ -507,9 +540,12 @@ class POWebSocketProvider:
         if event in ("updateStream", "candle", "tick", "price_update"):
             await self._handle_price(data)
 
-        # Autenticación exitosa
-        elif event in ("user_ready", "successauth"):
-            logger.info("✅ Autenticación PO exitosa")
+        # Autenticación exitosa — desbloquea la suscripción de pares
+        elif event in ("user_ready", "successauth", "authenticated"):
+            logger.info("✅ Auth PO confirmado — evento='%s'", event)
+            auth_event = getattr(self, "_auth_event", None)
+            if auth_event and not auth_event.is_set():
+                auth_event.set()
 
         # Error de autenticación
         elif event in ("notauthorized", "error"):
