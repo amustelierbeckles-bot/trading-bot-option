@@ -537,7 +537,7 @@ class POWebSocketProvider:
             await self._handle_price(data)
 
         # Autenticación exitosa — desbloquea la suscripción de pares
-        elif event in ("user_ready", "successauth", "authenticated"):
+        elif event in ("user_ready", "successauth", "authenticated", "updateAssets"):
             logger.info("✅ Auth PO confirmado — evento='%s'", event)
             auth_event = getattr(self, "_auth_event", None)
             if auth_event and not auth_event.is_set():
