@@ -8,9 +8,23 @@
 - Los dos repositorios son **árboles Git independientes** — el historial de Emergent **no** está en el remoto de GitHub
 - **Desarrollo activo documentado desde:** 9 de febrero de 2026
 
-## Última actualización: 31/03/2026 — gentle-ai instalado + diagnóstico ticks PO completo
+## Última actualización: 01/04/2026 — auth PO resuelto, WebSocket conectado y suscrito
 
 ---
+
+## Sesión 01/04/2026 — completado / pendiente
+
+### Implementado
+- **Fix auth WebSocket PO (raíz real):** el mensaje correcto es `42["user_init", {"id": USER_ID, "secret": SECRET}]`, NO `42["auth", {"session": SSID}]`. Capturado del WebSocket real del navegador.
+- **Fix orden Socket.IO:** el `user_init` se envía DESPUÉS de recibir `40{...}` (namespace confirm), no antes. PO descartaba silenciosamente el auth enviado antes de confirmar el namespace.
+- **Fix WS URL:** `configure()` usaba variable local `WS_URL` que no persistía; cambiado a `self._ws_url`.
+- **`updateAssets` como confirmación de auth:** PO responde al auth con `updateAssets` (con binary attachment). Agregado a la lista de eventos que disparan `auth_event`.
+- **Credenciales VPS:** `PO_USER_ID=120600861`, `PO_SECRET=701e816f8df8df027ab56dbe83fd76b6` en `.env.production`.
+- **Proxy activo:** `82.29.227.121:6933` (usuario: `nskpjqbkdatacenter`).
+- **Estado verificado:** `connected=true`, 20 pares suscritos, sin `ConnectionClosedOK 1005`. PO no cierra la conexión.
+
+### PENDIENTE
+- 🟡 **Verificar ticks reales** en ventana operativa (09:30 UTC-4): `ready_pairs` debe subir de 0. Buscar `tick binary` en logs o `GET /api/health` → `po_websocket.ready_pairs > 0`.
 
 ## Sesión 31/03/2026 — completado / pendiente
 
@@ -28,8 +42,11 @@
 - El fallback de 5s dispara, intenta suscribir, pero PO cierra con `ConnectionClosedOK`.
 - **Causa raíz confirmada:** `ci_session` obtenido desde IP local (`35.145.217.225`) pero bot conecta vía proxy (`194.113.80.23`). PO rechaza porque IP del session ≠ IP de conexión.
 
-### PENDIENTE — crítico
-- 🔴 **Obtener `ci_session` válido desde IP del proxy:**
+### PENDIENTE — resuelto en sesión 01/04
+- 🟢 **Auth PO resuelto** — ver sesión 01/04 arriba.
+
+### PENDIENTE ORIGINAL — ya no aplica
+- ~~🔴 **Obtener `ci_session` válido desde IP del proxy:**~~
   1. Instalar **FoxyProxy** en Chrome
   2. Configurar SOCKS5: `194.113.80.23:6306` / user: `nskpjqbk` / pass: `541oyok0gzpn`
   3. Login en pocketoption.com con proxy activo
