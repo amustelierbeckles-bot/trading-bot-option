@@ -198,7 +198,7 @@ class POWebSocketProvider:
         self._is_demo    = is_demo
         self._full_cookie = full_cookie
         self._proxy_url   = proxy_url
-        self.is_configured = bool(ssid or full_cookie)
+        self.is_configured = bool(user_id and secret)
         self._ws_url = WS_URL_DEMO if is_demo else WS_URL_REAL
         if proxy_url:
             logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | proxy=%s",
@@ -349,17 +349,17 @@ class POWebSocketProvider:
         await ws.send("40")
         # Sin delay aquí: PO puede cerrar el socket si auth no llega de inmediato tras el "40"
 
-        # Auth Socket.IO: payload solo usa session + isDemo (SSID/cookie ya en headers)
+        # Auth Socket.IO: formato real capturado de PO → user_init con id + secret
         # Crear el evento ANTES de enviar auth para no perder la confirmación de PO
         self._auth_event = asyncio.Event()
 
-        if self._ssid:
-            auth_msg = json.dumps(["auth", {
-                "session": self._ssid,
-                "isDemo": 1 if self._is_demo else 0,
+        if self._user_id and self._secret:
+            auth_msg = json.dumps(["user_init", {
+                "id": self._user_id,
+                "secret": self._secret,
             }])
             await ws.send(f"42{auth_msg}")
-            logger.info("🔐 Auth enviado | isDemo=%d", 1 if self._is_demo else 0)
+            logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
 
         # Suscripción diferida: esperamos confirmación de auth de PO antes de suscribir
         # pares (evita race condition con proxy SOCKS5 de alta latencia).
