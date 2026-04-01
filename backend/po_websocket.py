@@ -190,7 +190,6 @@ class POWebSocketProvider:
         full_cookie: cadena completa de cookies (opcional, más confiable)
         is_demo: True para cuenta demo, False para cuenta real
         """
-        global WS_URL
         self._ssid       = urllib.parse.unquote(ssid)   # H1: decodificar %3A, %7B, etc.
         self._ssid_configured_at = time.time()
         self._ssid_alert_sent    = False
@@ -200,7 +199,7 @@ class POWebSocketProvider:
         self._full_cookie = full_cookie
         self._proxy_url   = proxy_url
         self.is_configured = bool(ssid or full_cookie)
-        WS_URL = WS_URL_DEMO if is_demo else WS_URL_REAL
+        self._ws_url = WS_URL_DEMO if is_demo else WS_URL_REAL
         if proxy_url:
             logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | proxy=%s",
                         user_id, "DEMO" if is_demo else "REAL", proxy_url.split("@")[-1])
@@ -313,7 +312,7 @@ class POWebSocketProvider:
             connect_kwargs["proxy"] = self._proxy_url
             logger.info("🌐 Conectando vía proxy → %s", self._proxy_url.split("@")[-1])
 
-        async with websockets.connect(WS_URL, **connect_kwargs) as ws:
+        async with websockets.connect(self._ws_url, **connect_kwargs) as ws:
             self._ws             = ws
             self.is_connected    = True
             self.connected_since = time.time()
