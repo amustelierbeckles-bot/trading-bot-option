@@ -347,23 +347,11 @@ class POWebSocketProvider:
 
         # Responde con upgrade a WebSocket (mensaje "40")
         await ws.send("40")
-        # Sin delay aquí: PO puede cerrar el socket si auth no llega de inmediato tras el "40"
 
-        # Auth Socket.IO: formato real capturado de PO → user_init con id + secret
-        # Crear el evento ANTES de enviar auth para no perder la confirmación de PO
+        # Crear auth_event aquí para que esté listo cuando llegue el "40" de PO
         self._auth_event = asyncio.Event()
 
-        if self._user_id and self._secret:
-            auth_msg = json.dumps(["user_init", {
-                "id": self._user_id,
-                "secret": self._secret,
-            }])
-            await ws.send(f"42{auth_msg}")
-            logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
-
-        # Suscripción diferida: esperamos confirmación de auth de PO antes de suscribir
-        # pares (evita race condition con proxy SOCKS5 de alta latencia).
-        # _subscribe_after_auth tiene fallback de 5s si PO no emite successauth/user_ready.
+        # Suscripción diferida: espera confirmación de auth antes de suscribir pares
         asyncio.create_task(self._subscribe_after_auth(ws))
 
     async def _subscribe_pairs(self, ws):
@@ -445,7 +433,15 @@ class POWebSocketProvider:
             return
 
         if raw.startswith("40"):
-            logger.info("🔍 Socket.IO msg-40 raw | %s", raw[:200])
+            # Namespace confirmado por PO → ahora sí enviamos el auth
+            logger.info("🔍 Socket.IO msg-40 | namespace confirmado, enviando auth...")
+            if self._user_id and self._secret:
+                auth_msg = json.dumps(["user_init", {
+                    "id": self._user_id,
+                    "secret": self._secret,
+                }])
+                await ws.send(f"42{auth_msg}")
+                logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
             return
 
         # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
