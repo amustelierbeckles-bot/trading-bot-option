@@ -8,7 +8,6 @@ Estrategias de trading y motor de consenso multi-estrategia.
   4. MACDStochasticStrategy    — MACD + Estocástico (momentum)
   5. EMACrossoverStrategy      — cruce de EMAs (tendencia)
 """
-import random
 from typing import Dict, List, Optional
 from data_provider import IndicatorSet
 

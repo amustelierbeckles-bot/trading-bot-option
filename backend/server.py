@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
                 "REAL" if provider.is_configured else "SIMULADO")
 
     # ── MongoDB (opcional) ────────────────────────────────────────────────────
-    mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+    mongo_url = os.getenv("MONGO_URI", os.getenv("MONGO_URL", "mongodb://localhost:27017"))
     try:
         client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=2000)
         await client.server_info()
