@@ -8,7 +8,7 @@
 - Los dos repositorios son **árboles Git independientes** — el historial de Emergent **no** está en el remoto de GitHub
 - **Desarrollo activo documentado desde:** 9 de febrero de 2026
 
-## Última actualización: 01/04/2026 — auth PO resuelto, WebSocket conectado y suscrito
+## Última actualización: 02/04/2026 — proxy residencial + subscribeSymbol confirmados
 
 ---
 
@@ -25,6 +25,18 @@
 
 ### PENDIENTE
 - 🟡 **Verificar ticks reales** en ventana operativa (09:30 UTC-4): `ready_pairs` debe subir de 0. Buscar `tick binary` en logs o `GET /api/health` → `po_websocket.ready_pairs > 0`.
+
+## Sesión 02/04/2026 — completado / pendiente
+
+### Implementado
+- **Proxy residencial activo:** `31.98.14.221:5898` / user: `nskpjqbk` en `.env.production` y `docker-compose.production.yml`. Reemplaza al datacenter `82.29.227.121` que bloqueaba feeds.
+- **Diagnóstico subscribeSymbol vs changeSymbol:** `changeSymbol+subfor` (del browser) causa 1005. `subscribeSymbol + #symbol_otc` es el formato correcto para este endpoint. Confirmado por experimento A/B.
+- **Auth:** `user_init + id + secret` sigue siendo el formato que no da 1005 en suscripción.
+- **Estado verificado:** `connected=true`, 20 pares suscritos sin 1005, fuera de ventana.
+- **Pendiente confirmación:** ticks reales a las 09:30 UTC-4.
+
+### PENDIENTE
+- 🟡 **Verificar ticks a las 09:30 UTC-4** — `GET /api/health` → `ready_pairs > 0` o logs con `tick binary`.
 
 ## Sesión 31/03/2026 — completado / pendiente
 
