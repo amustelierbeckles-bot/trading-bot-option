@@ -145,11 +145,6 @@ async def lifespan(app: FastAPI):
             await db.signals.create_index([("audit_confidence", 1), ("result", 1)])
             await db.signals.create_index([("created_at", -1)])
             await db.signals.create_index([("execution_mode", 1), ("created_at", -1)])
-            await db.signals.create_index(
-                [("symbol", 1), ("type", 1), ("hour_bucket", 1)],
-                unique=True, sparse=False,
-                name="signal_dedup_unique",
-            )
             await db.trades.create_index([("symbol", 1), ("result", 1), ("created_at", -1)])
             await db.trades.create_index([("signal_id", 1)], unique=True, sparse=True)
             await db.trades.create_index([("audit_confidence", 1), ("result", 1)])
