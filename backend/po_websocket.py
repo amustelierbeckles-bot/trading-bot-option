@@ -360,7 +360,6 @@ class POWebSocketProvider:
         logger.info("📡 Suscribiendo %d pares con jitter humano...", len(symbols))
 
         for i, po_sym in enumerate(symbols):
-            # TEST diagnóstico: subscribeSymbol con # para aislar si es el proxy o el formato
             await ws.send(f'42{json.dumps(["subscribeSymbol", {"asset": "#" + po_sym}])}')
 
             # Delay aleatorio entre suscripciones (comportamiento humano)
