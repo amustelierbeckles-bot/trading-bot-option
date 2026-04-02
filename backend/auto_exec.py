@@ -633,6 +633,22 @@ async def _auto_scan_loop(app):
                 }
 
                 if use_mongo:
+                    # Guard anti-duplicados: verificar si ya existe señal reciente
+                    # del mismo par+tipo en los últimos COOLDOWN_SECONDS en MongoDB.
+                    # Cubre reinicios del contenedor donde cooldown_map se pierde.
+                    cutoff_dedup = emit_time - timedelta(seconds=COOLDOWN_SECONDS)
+                    existing = await db.signals.find_one({
+                        "symbol": symbol,
+                        "type":   signal["type"],
+                        "created_at": {"$gte": cutoff_dedup},
+                    })
+                    if existing:
+                        logger.debug(
+                            "⏭  Señal %s %s omitida — duplicado en MongoDB (últimos %ds)",
+                            signal["type"], symbol, COOLDOWN_SECONDS,
+                        )
+                        continue
+
                     db_doc = {**doc, "created_at": emit_time}
                     db_doc.pop("id", None)
                     result_ins = await db.signals.insert_one(db_doc)
