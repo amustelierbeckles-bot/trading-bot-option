@@ -198,7 +198,7 @@ class POWebSocketProvider:
         self._is_demo    = is_demo
         self._full_cookie = full_cookie
         self._proxy_url   = proxy_url
-        self.is_configured = bool(ssid or full_cookie or (secret and user_id))
+        self.is_configured = bool((secret and user_id) or ssid or full_cookie)
         self._ws_url = WS_URL_DEMO if is_demo else WS_URL_REAL
         if proxy_url:
             logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | proxy=%s",
@@ -433,18 +433,15 @@ class POWebSocketProvider:
             return
 
         if raw.startswith("40"):
-            # Namespace confirmado por PO → enviamos auth con sessionToken+uid
+            # Namespace confirmado por PO → enviamos auth con user_init
             logger.info("🔍 Socket.IO msg-40 | namespace confirmado, enviando auth...")
-            if self._secret and self._user_id:
-                auth_msg = json.dumps(["auth", {
-                    "sessionToken": self._secret,
-                    "uid":          str(self._user_id),
-                    "lang":         "en",
-                    "currentUrl":   "cabinet/quick-high-low",
-                    "isChart":      1,
+            if self._user_id and self._secret:
+                auth_msg = json.dumps(["user_init", {
+                    "id":     self._user_id,
+                    "secret": self._secret,
                 }])
                 await ws.send(f"42{auth_msg}")
-                logger.info("🔐 Auth enviado | uid=%s", self._user_id)
+                logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
             return
 
         # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
