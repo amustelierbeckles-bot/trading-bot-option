@@ -30,26 +30,26 @@ logger = logging.getLogger(__name__)
 # ── Mapeo OTC symbol → símbolo interno de PO ─────────────────────────────────
 # Extraído del protocolo observado en Network tab
 OTC_SYMBOL_MAP = {
-    "OTC_EURUSD":  "#EURUSD_otc",
-    "OTC_GBPUSD":  "#GBPUSD_otc",
-    "OTC_USDJPY":  "#USDJPY_otc",
-    "OTC_USDCHF":  "#USDCHF_otc",
-    "OTC_AUDUSD":  "#AUDUSD_otc",
-    "OTC_NZDUSD":  "#NZDUSD_otc",
-    "OTC_USDCAD":  "#USDCAD_otc",
-    "OTC_EURJPY":  "#EURJPY_otc",
-    "OTC_EURGBP":  "#EURGBP_otc",
-    "OTC_EURAUD":  "#EURAUD_otc",
-    "OTC_EURCAD":  "#EURCAD_otc",
-    "OTC_EURCHF":  "#EURCHF_otc",
-    "OTC_GBPJPY":  "#GBPJPY_otc",
-    "OTC_GBPAUD":  "#GBPAUD_otc",
-    "OTC_GBPCAD":  "#GBPCAD_otc",
-    "OTC_GBPCHF":  "#GBPCHF_otc",
-    "OTC_AUDJPY":  "#AUDJPY_otc",
-    "OTC_AUDCAD":  "#AUDCAD_otc",
-    "OTC_CADJPY":  "#CADJPY_otc",
-    "OTC_CHFJPY":  "#CHFJPY_otc",
+    "OTC_EURUSD":  "EURUSD_otc",
+    "OTC_GBPUSD":  "GBPUSD_otc",
+    "OTC_USDJPY":  "USDJPY_otc",
+    "OTC_USDCHF":  "USDCHF_otc",
+    "OTC_AUDUSD":  "AUDUSD_otc",
+    "OTC_NZDUSD":  "NZDUSD_otc",
+    "OTC_USDCAD":  "USDCAD_otc",
+    "OTC_EURJPY":  "EURJPY_otc",
+    "OTC_EURGBP":  "EURGBP_otc",
+    "OTC_EURAUD":  "EURAUD_otc",
+    "OTC_EURCAD":  "EURCAD_otc",
+    "OTC_EURCHF":  "EURCHF_otc",
+    "OTC_GBPJPY":  "GBPJPY_otc",
+    "OTC_GBPAUD":  "GBPAUD_otc",
+    "OTC_GBPCAD":  "GBPCAD_otc",
+    "OTC_GBPCHF":  "GBPCHF_otc",
+    "OTC_AUDJPY":  "AUDJPY_otc",
+    "OTC_AUDCAD":  "AUDCAD_otc",
+    "OTC_CADJPY":  "CADJPY_otc",
+    "OTC_CHFJPY":  "CHFJPY_otc",
 }
 
 # Inverso: símbolo PO → símbolo OTC
@@ -198,7 +198,7 @@ class POWebSocketProvider:
         self._is_demo    = is_demo
         self._full_cookie = full_cookie
         self._proxy_url   = proxy_url
-        self.is_configured = bool(user_id and secret)
+        self.is_configured = bool(ssid or full_cookie)
         self._ws_url = WS_URL_DEMO if is_demo else WS_URL_REAL
         if proxy_url:
             logger.info("🔌 POWebSocket configurado | user_id=%d | modo=%s | proxy=%s",
@@ -360,8 +360,8 @@ class POWebSocketProvider:
         logger.info("📡 Suscribiendo %d pares con jitter humano...", len(symbols))
 
         for i, po_sym in enumerate(symbols):
-            msg = json.dumps(["subscribeSymbol", {"asset": po_sym}])
-            await ws.send(f"42{msg}")
+            await ws.send(f'42{json.dumps(["changeSymbol", {"asset": po_sym, "period": 30}])}')
+            await ws.send(f'42{json.dumps(["subfor", po_sym])}')
 
             # Delay aleatorio entre suscripciones (comportamiento humano)
             if i < len(symbols) - 1:
@@ -433,15 +433,12 @@ class POWebSocketProvider:
             return
 
         if raw.startswith("40"):
-            # Namespace confirmado por PO → ahora sí enviamos el auth
+            # Namespace confirmado por PO → enviamos auth con ci_session
             logger.info("🔍 Socket.IO msg-40 | namespace confirmado, enviando auth...")
-            if self._user_id and self._secret:
-                auth_msg = json.dumps(["user_init", {
-                    "id": self._user_id,
-                    "secret": self._secret,
-                }])
+            if self._ssid:
+                auth_msg = json.dumps(["auth", {"session": self._ssid}])
                 await ws.send(f"42{auth_msg}")
-                logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
+                logger.info("🔐 Auth enviado | session=...%s", self._ssid[-8:])
             return
 
         # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
@@ -537,7 +534,7 @@ class POWebSocketProvider:
             await self._handle_price(data)
 
         # Autenticación exitosa — desbloquea la suscripción de pares
-        elif event in ("user_ready", "successauth", "authenticated", "updateAssets"):
+        elif event in ("user_ready", "successauth", "authenticated", "updateAssets", "auth/success"):
             logger.info("✅ Auth PO confirmado — evento='%s'", event)
             auth_event = getattr(self, "_auth_event", None)
             if auth_event and not auth_event.is_set():
