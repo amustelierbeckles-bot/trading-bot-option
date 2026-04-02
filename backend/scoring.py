@@ -12,6 +12,7 @@ Componentes del quality_score:
 import math
 from typing import Dict, List, Optional
 from data_provider import IndicatorSet
+from assets import get_price_trend
 
 # Mapa de grupos ortogonales por estrategia.
 # Penaliza el consenso falso: 3 estrategias del mismo oscilador = 1 grupo.
@@ -58,8 +59,6 @@ def quality_score(signal: dict, symbol: str = None,
     Quality Score ponderado con Consenso Ortogonal (0–1).
     Importa get_price_trend en tiempo de ejecución para evitar circular import.
     """
-    from assets import get_price_trend
-
     confidence          = signal.get("confidence", 0)
     cci_abs             = abs(signal.get("cci", 0))
     strategies_agreeing = signal.get("strategies_agreeing", [])

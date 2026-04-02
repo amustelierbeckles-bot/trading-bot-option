@@ -5,9 +5,11 @@ Sistema Antifragile v3.0 — tres módulos de gestión de riesgo adaptativa:
   Módulo 2: Evaluación de Timeframe Post-Pérdida (proxy ADX via ATR%)
   Módulo 3: Bloqueo por Correlación entre pares
 """
+import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,63 @@ logger = logging.getLogger(__name__)
 _martingale_state:   dict = {}   # symbol → { base, current, losses }
 _correlation_locks:  dict = {}   # currency → datetime (expiry)
 _timeframe_overrides: dict = {}  # symbol → "5min" | "15min"
+
+# ── Redis opcional (enlazado por server lifespan) ─────────────────────────────
+_af_redis: Optional[Any] = None
+
+
+def af_bind_redis(redis) -> None:
+    """Enlaza cliente Redis async para persistir correlation_locks."""
+    global _af_redis
+    _af_redis = redis
+
+
+def _schedule_af_persist() -> None:
+    if not _af_redis:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(af_save_state(_af_redis))
+
+
+async def af_save_state(redis) -> None:
+    """Persiste correlation_locks activos en Redis (TTL 1h)."""
+    if not redis:
+        return
+    try:
+        now     = datetime.utcnow()
+        payload = {
+            cur: exp.isoformat()
+            for cur, exp in _correlation_locks.items()
+            if isinstance(exp, datetime) and exp > now
+        }
+        await redis.set("af:correlation_locks", json.dumps(payload), ex=3600)
+    except Exception:
+        pass
+
+
+async def af_load_state(redis) -> None:
+    """Restaura correlation_locks desde Redis al arrancar."""
+    if not redis:
+        return
+    try:
+        saved = await redis.get("af:correlation_locks")
+        if not saved:
+            return
+        data = json.loads(saved)
+        now  = datetime.utcnow()
+        loaded = 0
+        for currency, exp_str in data.items():
+            exp = datetime.fromisoformat(exp_str)
+            if exp > now:
+                _correlation_locks[currency] = exp
+                loaded += 1
+        if loaded:
+            logger.info("📥 Antifragile | %d correlation_lock(s) restaurados desde Redis", loaded)
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -213,6 +272,9 @@ def update_correlation_lock(recent_losses: list, lock_minutes: int = 30) -> list
                     "🔴 CORRELACIÓN: %s y %s comparten %s — bloqueado %d min",
                     sym_a, sym_b, currency, lock_minutes
                 )
+
+    if newly_locked:
+        _schedule_af_persist()
 
     return newly_locked
 

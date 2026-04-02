@@ -101,6 +101,9 @@ async def lifespan(app: FastAPI):
             from circuit_breaker import cb_bind_redis, cb_load_state
             cb_bind_redis(r)
             await cb_load_state(r)
+            from antifragile import af_bind_redis, af_load_state
+            af_bind_redis(r)
+            await af_load_state(r)
         except Exception as re:
             logger.warning("⚠️  Redis no disponible (%s) — caché in-memory activo", re)
 
