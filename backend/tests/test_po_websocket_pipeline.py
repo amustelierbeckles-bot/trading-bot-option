@@ -102,15 +102,15 @@ class TestHandleBinaryPrice:
     async def test_t1_1_writes_tick_to_buffer(self):
         prov = POWebSocketProvider()
         # 1.0825 * 1e6 = 1082500
-        raw = b'["#EURUSD_otc",1082500]'
+        raw = b'["EURUSD_otc",1082500]'
         await prov._handle_binary_price(raw)
         assert prov._buffers["OTC_EURUSD"].last_price == pytest.approx(1.0825)
 
     async def test_t1_2_last_update_advances(self):
         prov = POWebSocketProvider()
         t0, t1 = 1_700_000_100.0, 1_700_000_200.0
-        raw1 = b'["#EURUSD_otc",1082500]'
-        raw2 = b'["#EURUSD_otc",1082600]'
+        raw1 = b'["EURUSD_otc",1082500]'
+        raw2 = b'["EURUSD_otc",1082600]'
         with patch("po_websocket.time.time", side_effect=[t0, t1]):
             await prov._handle_binary_price(raw1)
             assert prov._buffers["OTC_EURUSD"].last_update == t0
@@ -119,13 +119,13 @@ class TestHandleBinaryPrice:
 
     async def test_t1_3_last_price_changes(self):
         prov = POWebSocketProvider()
-        await prov._handle_binary_price(b'["#EURUSD_otc",1000000]')
-        await prov._handle_binary_price(b'["#EURUSD_otc",2000000]')
+        await prov._handle_binary_price(b'["EURUSD_otc",1000000]')
+        await prov._handle_binary_price(b'["EURUSD_otc",2000000]')
         assert prov._buffers["OTC_EURUSD"].last_price == 2.0
 
     async def test_t1_5_unknown_symbol_does_not_touch_known_buffers(self):
         prov = POWebSocketProvider()
-        await prov._handle_binary_price(b'["#EURUSD_otc",1082500]')
+        await prov._handle_binary_price(b'["EURUSD_otc",1082500]')
         before = prov._buffers["OTC_EURUSD"].last_price
         await prov._handle_binary_price(b'["#ZZZZZZ_otc",999999999]')
         assert prov._buffers["OTC_EURUSD"].last_price == before
@@ -164,12 +164,12 @@ async def test_p3_2_subscribe_pairs_sends_twenty_messages():
 @pytest.mark.asyncio
 async def test_p3_3_p3_4_buffers_isolated_no_cross_contamination():
     prov = POWebSocketProvider()
-    await prov._handle_binary_price(b'["#EURUSD_otc",1082500]')
-    await prov._handle_binary_price(b'["#GBPUSD_otc",1250000]')
+    await prov._handle_binary_price(b'["EURUSD_otc",1082500]')
+    await prov._handle_binary_price(b'["GBPUSD_otc",1250000]')
     assert prov._buffers["OTC_EURUSD"].last_price == pytest.approx(1.0825)
     assert prov._buffers["OTC_GBPUSD"].last_price == 1.25
     gbp_before = list(prov.get_candles("OTC_GBPUSD"))
-    await prov._handle_binary_price(b'["#EURUSD_otc",1090000]')
+    await prov._handle_binary_price(b'["EURUSD_otc",1090000]')
     assert prov._buffers["OTC_GBPUSD"].last_price == 1.25
     assert prov.get_candles("OTC_GBPUSD") == gbp_before
 
@@ -177,7 +177,7 @@ async def test_p3_3_p3_4_buffers_isolated_no_cross_contamination():
 @pytest.mark.asyncio
 async def test_p3_5_buffers_persist_when_not_reinstantiated():
     prov = POWebSocketProvider()
-    await prov._handle_binary_price(b'["#EURUSD_otc",1082500]')
+    await prov._handle_binary_price(b'["EURUSD_otc",1082500]')
     prov.is_connected = False
     assert prov._buffers["OTC_EURUSD"].last_price == pytest.approx(1.0825)
     assert prov.get_candles("OTC_EURUSD")
@@ -187,7 +187,7 @@ async def test_p3_5_buffers_persist_when_not_reinstantiated():
 async def test_p3_5_new_provider_resets_buffers():
     """Dos constructores POWebSocketProvider() distintos → buffers independientes."""
     p1 = POWebSocketProvider()
-    await p1._handle_binary_price(b'["#EURUSD_otc",1082500]')
+    await p1._handle_binary_price(b'["EURUSD_otc",1082500]')
     p2 = POWebSocketProvider()
     assert p2._buffers["OTC_EURUSD"].last_price == 0.0
 
