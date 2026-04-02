@@ -115,9 +115,32 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             logger.warning("🛑 Auto-exec bloqueado — PO WebSocket no conectado")
             return
 
-        symbol    = doc.get("symbol", "")
-        direction = doc.get("type", "").lower()
-        amount    = float(os.getenv("AUTO_EXECUTE_AMOUNT", "100"))
+        symbol      = doc.get("symbol", "")
+        direction   = doc.get("type", "").lower()
+        base_amount = float(os.getenv("AUTO_EXECUTE_AMOUNT", "100"))
+
+        # Martingala Suave — solo si MARTINGALE_ENABLED=true (off por defecto).
+        if os.getenv("MARTINGALE_ENABLED", "false").lower() == "true":
+            from antifragile import soft_martingale_next_bet
+            last_result = None
+            if app.state.use_mongo:
+                last_trade = await app.state.db.trades.find_one(
+                    {"symbol": symbol, "execution_mode": "auto",
+                     "result": {"$in": ["win", "loss"]}},
+                    sort=[("created_at", -1)],
+                )
+                if last_trade:
+                    last_result = last_trade.get("result")
+            if last_result in ("win", "loss"):
+                mg     = soft_martingale_next_bet(symbol, base_amount, last_result)
+                amount = mg["next_bet"]
+                logger.info("🎲 Martingala | %s | x%.1f | $%.2f → $%.2f",
+                            symbol, mg["multiplier"], base_amount, amount)
+            else:
+                amount = base_amount
+        else:
+            amount = base_amount
+
         # Guard: AUTO_EXECUTE_MODE=demo → siempre orden demo en PO (no dinero real).
         if auto_mode == "demo":
             is_demo = True
@@ -185,7 +208,7 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             "amount":            amount,
             "po_order_id":       result.get("order_id"),
             "po_status":         result.get("status"),
-            "audit_confidence":  "high",
+            "audit_confidence":  "pending",
             "result":            None,
             "created_at":        now,
             "session":           doc.get("session", ""),
