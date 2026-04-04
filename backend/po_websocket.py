@@ -432,15 +432,19 @@ class POWebSocketProvider:
             return
 
         if raw.startswith("40"):
-            # Namespace confirmado por PO → enviamos auth con user_init
+            # Namespace confirmado por PO → enviamos auth con formato real del protocolo
             logger.info("🔍 Socket.IO msg-40 | namespace confirmado, enviando auth...")
-            if self._user_id and self._secret:
-                auth_msg = json.dumps(["user_init", {
-                    "id":     self._user_id,
-                    "secret": self._secret,
+            if self._user_id and self._ssid:
+                auth_msg = json.dumps(["auth", {
+                    "isDemo":        1 if self._is_demo else 0,
+                    "isFastHistory": True,
+                    "isOptimized":   True,
+                    "platform":      2,
+                    "session":       self._ssid,
+                    "uid":           self._user_id,
                 }])
                 await ws.send(f"42{auth_msg}")
-                logger.info("🔐 Auth enviado | user_id=%d", self._user_id)
+                logger.info("🔐 Auth enviado | uid=%d | isDemo=%d", self._user_id, 1 if self._is_demo else 0)
             return
 
         # Mensajes con adjunto binario: "451-[...]" → el binario llega aparte
