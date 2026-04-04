@@ -180,7 +180,14 @@ async def verify_signal_result(signal: dict, entry_time: datetime,
         if close_price is None:
             provider = get_provider()
             if provider and provider.is_configured:
-                close_price = await provider.get_price_for_audit(symbol)
+                # Prioridad 1: cache TwelveData del ciclo anterior (TTL 300s, ~125s de edad)
+                cached = provider.get_cached_price(symbol)
+                if cached and cached > 0:
+                    close_price = cached
+                    logger.info("📡 Precio auditoría desde cache TD | %s = %.5f", symbol, cached)
+                else:
+                    # Prioridad 2: fetch fresco invalidando cache
+                    close_price = await provider.get_price_for_audit(symbol)
 
         if close_price is None:
             confidence = "low"
@@ -298,7 +305,11 @@ async def verify_every_signal(signal_id: str, signal: dict, app) -> None:
         if close_price is None:
             provider = get_provider()
             if provider and provider.is_configured:
-                close_price = await provider.get_price_for_audit(symbol)
+                cached = provider.get_cached_price(symbol)
+                if cached and cached > 0:
+                    close_price = cached
+                else:
+                    close_price = await provider.get_price_for_audit(symbol)
 
         if close_price is None:
             logger.warning("⚠️  _verify_every_signal %s — sin precio real", symbol)
