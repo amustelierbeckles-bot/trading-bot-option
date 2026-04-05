@@ -143,6 +143,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("⏭  PO WebSocket desactivado (PO_SSID no configurado)")
 
+    # ── Deriv API (ejecutor de trades opcional) ───────────────────────────────
+    deriv_token = os.getenv("DERIV_API_TOKEN", "").strip()
+    app.state.deriv_provider = None
+    if deriv_token:
+        try:
+            from deriv_api import init_deriv_provider
+            _deriv_app_id  = int(os.getenv("DERIV_APP_ID", "36544"))
+            _deriv_is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
+            dp = init_deriv_provider(
+                token   = deriv_token,
+                is_demo = _deriv_is_demo,
+                app_id  = _deriv_app_id,
+            )
+            await dp.start()
+            app.state.deriv_provider = dp
+            logger.info("🎯 Deriv API iniciado | modo=%s", "DEMO" if _deriv_is_demo else "REAL")
+        except Exception as deriv_err:
+            logger.warning("⚠️  Deriv API no disponible: %s", deriv_err)
+    else:
+        logger.info("⏭  Deriv API desactivado (DERIV_API_TOKEN no configurado)")
+
     # ── Índices MongoDB ────────────────────────────────────────────────────────
     if app.state.use_mongo:
         try:
@@ -219,6 +240,8 @@ async def lifespan(app: FastAPI):
     await provider.stop()
     if app.state.po_provider:
         await app.state.po_provider.stop()
+    if app.state.deriv_provider:
+        await app.state.deriv_provider.stop()
     if app.state.mongodb:
         app.state.mongodb.close()
 

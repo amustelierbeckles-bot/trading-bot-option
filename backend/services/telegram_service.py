@@ -195,12 +195,51 @@ async def send_signal_telegram(signal: dict, app=None) -> Optional[int]:
         f"Pulsa si decides operar:"
     )
 
-    keyboard = {
-        "inline_keyboard": [[
-            {"text": "✅ Voy a operar", "callback_data": f"operate:{sid}"},
-            {"text": "⏭ Ignorar",       "callback_data": f"ignore:{sid}"},
-        ]]
-    }
+    # Si Deriv está conectado → botones de monto (usuario elige antes de ejecutar)
+    deriv_prov  = getattr(app, "state", None) and getattr(app.state, "deriv_provider", None)
+    deriv_ready = bool(deriv_prov and deriv_prov.is_connected)
+
+    if deriv_ready:
+        # DERIV_TRADE_AMOUNTS: montos disponibles en el selector (default: 10,25,50)
+        _amounts_raw = os.getenv("DERIV_TRADE_AMOUNTS", "10,25,50")
+        try:
+            trade_amounts = [
+                int(float(a.strip()))
+                for a in _amounts_raw.split(",")
+                if a.strip()
+            ]
+        except ValueError:
+            trade_amounts = [10, 25, 50]
+
+        amount_btns = [
+            {"text": f"🚀 ${a}", "callback_data": f"exec:{sid}:{a}"}
+            for a in trade_amounts
+        ]
+
+        # Filas: máx 3 botones de monto, luego controles
+        rows = []
+        row: list = []
+        for btn in amount_btns:
+            row.append(btn)
+            if len(row) == 3:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+
+        rows.append([
+            {"text": "✅ Solo registro",  "callback_data": f"operate:{sid}"},
+            {"text": "⏭ Ignorar",        "callback_data": f"ignore:{sid}"},
+        ])
+
+        keyboard = {"inline_keyboard": rows}
+    else:
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Voy a operar", "callback_data": f"operate:{sid}"},
+                {"text": "⏭ Ignorar",       "callback_data": f"ignore:{sid}"},
+            ]]
+        }
 
     result = await tg_api("sendMessage", {
         "chat_id":              chat_id,
@@ -304,6 +343,117 @@ async def handle_tg_callback(callback: dict, app):
             ))
             logger.info("🔄 Auditoría autónoma lanzada | %s %s | audit_id=%s",
                         stype, asset, audit_id)
+
+    elif parts[0] == "exec" and len(parts) >= 3:
+        # 🚀 Ejecución directa via Deriv — 1 tap desde Telegram
+        trade_key = str(msg_id)
+        try:
+            exec_amount = float(parts[2])
+        except (ValueError, IndexError):
+            exec_amount = float(os.getenv("AUTO_EXECUTE_AMOUNT", "50"))
+
+        exec_time   = datetime.utcnow()
+        trade_entry = _tg_active_trades.get(trade_key, {})
+        signal      = trade_entry.get("signal", {})
+        app_ref     = trade_entry.get("app")
+
+        if not signal or not app_ref:
+            await tg_edit_message(chat_id, msg_id,
+                "⚠️ Señal expirada — ya no se puede ejecutar.")
+            return
+
+        # Bloquear inmediatamente para evitar doble-tap
+        trade_entry["operated"] = True
+        asset_esc = html.escape(str(signal.get("asset_name", "")))
+        stype_esc = html.escape(str(signal.get("type", "")))
+        await tg_edit_message(chat_id, msg_id,
+            f"⏳ <b>Ejecutando via Deriv...</b>\n"
+            f"{asset_esc} — {stype_esc} | ${exec_amount:.0f}")
+
+        # Verificar Deriv conectado
+        deriv = getattr(app_ref.state, "deriv_provider", None)
+        if not deriv or not deriv.is_connected:
+            await tg_edit_message(chat_id, msg_id,
+                f"❌ Deriv no conectado.\n"
+                f"Usa <b>Solo registro manual</b> para rastrear este trade.",
+                {"inline_keyboard": [[
+                    {"text": "✅ Solo registro manual",
+                     "callback_data": f"operate:{signal.get('id','')}"},
+                ]]}
+            )
+            return
+
+        is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() != "real"
+        result  = await deriv.place_trade(
+            symbol         = signal.get("symbol", ""),
+            direction      = signal.get("type", "CALL"),
+            amount         = exec_amount,
+            expiry_seconds = 120,
+            is_demo        = is_demo,
+        )
+
+        if result.get("status") != "success":
+            err = html.escape(result.get("reason", "error desconocido"))
+            await tg_edit_message(chat_id, msg_id,
+                f"❌ <b>Error al ejecutar en Deriv:</b> {err}\n\n"
+                f"Puedes operar manualmente y registrar abajo:",
+                {"inline_keyboard": [[
+                    {"text": "✅ Operé manual",
+                     "callback_data": f"operate:{signal.get('id','')}"},
+                ]]}
+            )
+            return
+
+        # Registrar trade en MongoDB
+        audit_id = None
+        if app_ref.state.use_mongo:
+            try:
+                trade_doc = {
+                    "signal_id":       signal.get("id", ""),
+                    "symbol":          signal.get("symbol", ""),
+                    "asset_name":      signal.get("asset_name", ""),
+                    "signal_type":     signal.get("type", ""),
+                    "result":          "pending",
+                    "entry_price":     signal.get("entry_price", signal.get("price", 0)),
+                    "quality_score":   signal.get("quality_score", 0),
+                    "cci":             signal.get("cci", 0),
+                    "execution_mode":  "deriv_telegram",
+                    "amount":          exec_amount,
+                    "deriv_order_id":  result.get("order_id"),
+                    "buy_price":       result.get("buy_price"),
+                    "audit_confidence":"pending",
+                    "source":          "deriv_exec",
+                    "created_at":      exec_time,
+                    "session":         signal.get("session", ""),
+                    "strategies":      signal.get("strategies_agreeing", []),
+                }
+                ins      = await app_ref.state.db.trades.insert_one(trade_doc)
+                audit_id = str(ins.inserted_id)
+                _tg_active_trades[trade_key]["audit_id"] = audit_id
+                logger.info("📝 Trade Deriv registrado | audit_id=%s | %s %s",
+                            audit_id, signal.get("type"), signal.get("asset_name"))
+            except Exception as e:
+                logger.warning("⚠️  No se pudo registrar trade Deriv: %s", e)
+
+        contract_id = str(result.get("order_id", "?"))[:14]
+        await tg_edit_message(chat_id, msg_id,
+            f"🚀 <b>Trade ejecutado via Deriv</b>\n\n"
+            f"<b>{asset_esc}</b> — {stype_esc}\n"
+            f"Monto: <b>${exec_amount:.0f}</b> | Orden: <code>{contract_id}</code>\n"
+            f"Entrada: <b>{fmt_time(exec_time)}</b>\n\n"
+            f"⏳ Verificando resultado en 2 minutos automáticamente...",
+            {"inline_keyboard": [[
+                {"text": "✅ Fue WIN",  "callback_data": f"result:win:{trade_key}"},
+                {"text": "❌ Fue LOSS", "callback_data": f"result:loss:{trade_key}"},
+            ]]}
+        )
+
+        if app_ref:
+            asyncio.create_task(autonomous_audit(
+                chat_id, msg_id, signal, exec_time, audit_id, app_ref
+            ))
+            logger.info("🔄 Auditoría autónoma lanzada | Deriv | %s %s",
+                        signal.get("type"), signal.get("asset_name"))
 
     elif parts[0] == "ignore":
         trade_key = str(msg_id)
