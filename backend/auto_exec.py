@@ -7,6 +7,7 @@ Auto-ejecución y loop de escaneo automático de señales.
 import asyncio
 import logging
 import os
+import random
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
@@ -17,8 +18,11 @@ _last_wr_blocked: bool = False
 _po_no_data_cycles: int = 0
 PO_NO_DATA_ALERT_CYCLES: int = 5
 
-# Rotación round-robin para fallback Twelve Data cuando PO no está listo (ver CONTEXT.md).
+# Rotación round-robin para TwelveData (fallback PO y modo td_only).
 _td_fallback_queue: deque = deque()
+
+# Warm-up suave: primer ciclo en modo td_only usa concurrencia limitada.
+_td_warmup_done: bool = False
 
 logger = logging.getLogger(__name__)
 
@@ -394,124 +398,162 @@ async def _auto_scan_loop(app):
             fetch_start = datetime.utcnow()
             provider    = get_provider()
             po_prov     = getattr(app.state, "po_provider", None)
+            signal_mode = os.getenv("SIGNAL_MODE", "auto").lower()
+            pure_td     = (signal_mode == "td_only") or (po_prov is None)
 
-            # ── Bootstrap único por sesión ────────────────────────────────────
-            # Siembra los buffers de PO con 35 velas históricas de TwelveData
-            # UNA sola vez por par. Después, el buffer se mantiene vivo con ticks
-            # y nunca vuelve a necesitar TwelveData para indicadores.
-            # Máximo MAX_TD_FALLBACK_PER_CYCLE pares por ciclo: el plan gratuito de TD
-            # limita ~8 req/min; disparar 20 bootstrap en segundos agotaba el cupo (429).
-            if po_prov and provider and provider.is_configured:
-                from data_provider import CandleData as _CD
-                needs_boot = [
-                    sym for sym in pairs_to_scan
-                    if not po_prov.is_ready(sym)
-                    and not getattr(app.state, "_po_bootstrapped", set()).issuperset({sym})
-                ][:MAX_TD_FALLBACK_PER_CYCLE]
-                if needs_boot:
-                    if not hasattr(app.state, "_po_bootstrapped"):
-                        app.state._po_bootstrapped = set()
-                    logger.info("🌱 Bootstrap PO buffer | %d pares sin datos", len(needs_boot))
-                    boot_sem = asyncio.Semaphore(2)
-
-                    async def _boot_one(sym: str):
-                        async with boot_sem:
-                            await asyncio.sleep(0.5)
-                            ind = await provider.get_indicators(sym)
-                            if ind and ind.candles:
-                                added = po_prov.seed_from_candles(sym, ind.candles)
-                                app.state._po_bootstrapped.add(sym)
-                                logger.info("🌱 %s sembrado con %d velas", sym, added)
-
-                    boot_tasks = [asyncio.create_task(_boot_one(s)) for s in needs_boot]
-                    await asyncio.gather(*boot_tasks, return_exceptions=True)
-
-            # ── Fuente de indicadores: PO WebSocket (sin depender de is_connected)
-            # Los buffers persisten entre reconexiones — si hay datos, se usan.
             indicators_map: dict = {}
-            po_ready = 0
+            po_ready              = 0
 
-            if po_prov and not po_prov._kill_switch_active:
-                from data_provider import CandleData, IndicatorSet
-                for sym in pairs_to_scan:
-                    if not po_prov.is_ready(sym):
-                        continue
-                    candles_raw = po_prov.get_candles(sym)
-                    if not candles_raw:
-                        continue
-                    candles = [
-                        CandleData(
-                            time  = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d %H:%M:%S"),
-                            open  = c["open"],
-                            high  = c["high"],
-                            low   = c["low"],
-                            close = c["close"],
-                        )
-                        for c in candles_raw
-                    ]
-                    ind = IndicatorSet()
-                    ind.compute(candles)
-                    ind.last_candle_time = candles[-1].time if candles else ""
-                    indicators_map[sym]  = ind
-                    po_ready += 1
+            global _po_no_data_cycles, _td_fallback_queue, _td_warmup_done
 
-                # PO conectado pero par sin tick reciente (is_ready False): Twelve Data
-                # real con caché (TTL típico 300s). Máximo MAX_TD_FALLBACK_PER_CYCLE pares
-                # por ciclo en paralelo — reduce req/día y latencia vs. 20× await en serie.
-                if provider and provider.is_configured:
-                    global _td_fallback_queue
-                    pending = [s for s in pairs_to_scan if s not in indicators_map]
-                    pairs_for_td: list = []
-                    if pending:
-                        if (not _td_fallback_queue
-                                or set(_td_fallback_queue) != set(pending)):
-                            _td_fallback_queue = deque(pending)
-                        n_pick = min(MAX_TD_FALLBACK_PER_CYCLE, len(_td_fallback_queue))
-                        for _ in range(n_pick):
-                            pairs_for_td.append(_td_fallback_queue[0])
-                            _td_fallback_queue.rotate(-1)
-                    if pairs_for_td:
-                        results = await asyncio.gather(
-                            *[provider.get_indicators(s) for s in pairs_for_td],
-                            return_exceptions=True,
-                        )
-                        for sym, ind in zip(pairs_for_td, results):
-                            if isinstance(ind, Exception):
-                                continue
-                            if ind is None:
-                                continue
-                            indicators_map[sym] = ind
+            if not pure_td:
+                # ── Modo PO primario: buffer PO + fallback TwelveData ─────────────
+                # Bootstrap único por sesión: siembra buffers con velas históricas TD.
+                if po_prov and provider and provider.is_configured:
+                    from data_provider import CandleData as _CD
+                    needs_boot = [
+                        sym for sym in pairs_to_scan
+                        if not po_prov.is_ready(sym)
+                        and not getattr(app.state, "_po_bootstrapped", set()).issuperset({sym})
+                    ][:MAX_TD_FALLBACK_PER_CYCLE]
+                    if needs_boot:
+                        if not hasattr(app.state, "_po_bootstrapped"):
+                            app.state._po_bootstrapped = set()
+                        logger.info("🌱 Bootstrap PO buffer | %d pares sin datos", len(needs_boot))
+                        boot_sem = asyncio.Semaphore(2)
 
-            global _po_no_data_cycles
+                        async def _boot_one(sym: str):
+                            async with boot_sem:
+                                await asyncio.sleep(0.5)
+                                ind = await provider.get_indicators(sym)
+                                if ind and ind.candles:
+                                    added = po_prov.seed_from_candles(sym, ind.candles)
+                                    app.state._po_bootstrapped.add(sym)
+                                    logger.info("🌱 %s sembrado con %d velas", sym, added)
 
-            if po_ready == 0 and po_prov and not po_prov._kill_switch_active:
-                _po_no_data_cycles += 1
-                if _po_no_data_cycles == PO_NO_DATA_ALERT_CYCLES:
-                    from services.telegram_service import send_telegram
-                    asyncio.create_task(send_telegram(
-                        f"⚠️ PO WebSocket sin ticks\n"
-                        f"Llevan {PO_NO_DATA_ALERT_CYCLES} ciclos consecutivos "
-                        f"(~{PO_NO_DATA_ALERT_CYCLES * 2} min) sin datos reales de PO.\n"
-                        f"El bot opera con TwelveData como fallback.\n"
-                        f"Verifica el SSID o el proxy."
-                    ))
-            else:
-                _po_no_data_cycles = 0
+                        boot_tasks = [asyncio.create_task(_boot_one(s)) for s in needs_boot]
+                        await asyncio.gather(*boot_tasks, return_exceptions=True)
 
-            fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
-            td_fallback   = len(pairs_to_scan) - po_ready
+                # Extracción desde buffer PO (no depende de is_connected — buffers persisten).
+                if po_prov and not po_prov._kill_switch_active:
+                    from data_provider import CandleData, IndicatorSet
+                    for sym in pairs_to_scan:
+                        if not po_prov.is_ready(sym):
+                            continue
+                        candles_raw = po_prov.get_candles(sym)
+                        if not candles_raw:
+                            continue
+                        candles = [
+                            CandleData(
+                                time  = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d %H:%M:%S"),
+                                open  = c["open"],
+                                high  = c["high"],
+                                low   = c["low"],
+                                close = c["close"],
+                            )
+                            for c in candles_raw
+                        ]
+                        ind = IndicatorSet()
+                        ind.compute(candles)
+                        ind.last_candle_time = candles[-1].time if candles else ""
+                        indicators_map[sym]  = ind
+                        po_ready += 1
 
-            if po_prov and not po_prov._kill_switch_active:
+                    # Pares sin tick reciente → TwelveData fallback (round-robin, max 5/ciclo).
+                    if provider and provider.is_configured:
+                        pending = [s for s in pairs_to_scan if s not in indicators_map]
+                        pairs_for_td: list = []
+                        if pending:
+                            if (not _td_fallback_queue
+                                    or set(_td_fallback_queue) != set(pending)):
+                                _td_fallback_queue = deque(pending)
+                            n_pick = min(MAX_TD_FALLBACK_PER_CYCLE, len(_td_fallback_queue))
+                            for _ in range(n_pick):
+                                pairs_for_td.append(_td_fallback_queue[0])
+                                _td_fallback_queue.rotate(-1)
+                        if pairs_for_td:
+                            results = await asyncio.gather(
+                                *[provider.get_indicators(s) for s in pairs_for_td],
+                                return_exceptions=True,
+                            )
+                            for sym, ind in zip(pairs_for_td, results):
+                                if isinstance(ind, Exception) or ind is None:
+                                    continue
+                                indicators_map[sym] = ind
+
+                # Alerta si PO está conectado pero sin ticks (SSID expirado, etc.)
+                if po_ready == 0 and po_prov and not po_prov._kill_switch_active:
+                    _po_no_data_cycles += 1
+                    if _po_no_data_cycles == PO_NO_DATA_ALERT_CYCLES:
+                        from services.telegram_service import send_telegram
+                        asyncio.create_task(send_telegram(
+                            f"⚠️ PO WebSocket sin ticks\n"
+                            f"Llevan {PO_NO_DATA_ALERT_CYCLES} ciclos consecutivos "
+                            f"(~{PO_NO_DATA_ALERT_CYCLES * 2} min) sin datos reales de PO.\n"
+                            f"El bot opera con TwelveData como fallback.\n"
+                            f"Verifica el SSID o el proxy."
+                        ))
+                else:
+                    _po_no_data_cycles = 0
+
+                fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
+                td_fallback   = len(pairs_to_scan) - po_ready
                 logger.info(
                     "⚡ PO WebSocket %d/%d pares | TwelveData fallback %d pares | %.1fs",
                     po_ready, len(pairs_to_scan), td_fallback, fetch_elapsed,
                 )
+
             else:
+                # ── Modo SEÑALES PURAS (td_only): TwelveData como fuente primaria ──
+                # Round-robin: cubre todos los pares de sesión en N ciclos en lugar de
+                # intentarlos todos a la vez. El cache TTL=300s evita fetches redundantes.
+                # MAX_TD_PURE_CYCLE configurable (default 8) para ajustar cobertura/cuota.
                 if provider and provider.is_configured:
-                    indicators_map = await provider.get_indicators_batch(pairs_to_scan)
+                    max_pure = int(os.getenv("MAX_TD_PURE_CYCLE", "8"))
+
+                    if not _td_fallback_queue or set(_td_fallback_queue) != set(pairs_to_scan):
+                        _td_fallback_queue = deque(pairs_to_scan)
+
+                    n_pick       = min(max_pure, len(_td_fallback_queue))
+                    pairs_for_td = []
+                    for _ in range(n_pick):
+                        pairs_for_td.append(_td_fallback_queue[0])
+                        _td_fallback_queue.rotate(-1)
+
+                    if not _td_warmup_done:
+                        # Arranque suave: máx 2 fetches concurrentes + jitter (0.3–1.0s).
+                        # Protege la cuota API si el cache está frío al reiniciar.
+                        warmup_sem = asyncio.Semaphore(2)
+
+                        async def _fetch_warmup(sym: str):
+                            async with warmup_sem:
+                                await asyncio.sleep(random.uniform(0.3, 1.0))
+                                return await provider.get_indicators(sym)
+
+                        results = await asyncio.gather(
+                            *[_fetch_warmup(s) for s in pairs_for_td],
+                            return_exceptions=True,
+                        )
+                        _td_warmup_done = True
+                        logger.info("🌡️ Warm-up TwelveData completado | %d pares cargados", len(pairs_for_td))
+                    else:
+                        results = await asyncio.gather(
+                            *[provider.get_indicators(s) for s in pairs_for_td],
+                            return_exceptions=True,
+                        )
+
+                    for sym, ind in zip(pairs_for_td, results):
+                        if isinstance(ind, Exception) or ind is None:
+                            continue
+                        indicators_map[sym] = ind
                 else:
                     indicators_map = {sym: get_simulated_indicators(sym) for sym in pairs_to_scan}
-                logger.info("⚡ Fetch paralelo %.1fs para %d pares", fetch_elapsed, len(pairs_to_scan))
+
+                fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
+                logger.info(
+                    "📡 [td_only] TwelveData %d/%d pares activos | %.1fs",
+                    len(indicators_map), len(pairs_to_scan), fetch_elapsed,
+                )
 
             real_count      = sum(1 for s in pairs_to_scan if indicators_map.get(s) and indicators_map[s].is_real)
             simulated_count = len(pairs_to_scan) - real_count

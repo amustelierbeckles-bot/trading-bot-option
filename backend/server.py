@@ -108,9 +108,12 @@ async def lifespan(app: FastAPI):
             logger.warning("⚠️  Redis no disponible (%s) — caché in-memory activo", re)
 
     # ── PocketOption WebSocket ────────────────────────────────────────────────
-    po_ssid = os.getenv("PO_SSID", "").strip()
-    app.state.po_provider = None
-    if po_ssid:
+    po_ssid      = os.getenv("PO_SSID", "").strip()
+    _signal_mode = os.getenv("SIGNAL_MODE", "auto").lower()
+    app.state.po_provider  = None
+    app.state.signal_mode  = _signal_mode
+
+    if po_ssid and _signal_mode != "td_only":
         try:
             from po_websocket import init_po_provider
             is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
@@ -135,6 +138,8 @@ async def lifespan(app: FastAPI):
             logger.info("🔌 PO WebSocket iniciado | modo=%s", "DEMO" if is_demo else "REAL")
         except Exception as po_err:
             logger.warning("⚠️  PO WebSocket no disponible: %s", po_err)
+    elif _signal_mode == "td_only":
+        logger.info("📡 Modo SEÑALES PURAS activo (SIGNAL_MODE=td_only) — PO WebSocket desactivado")
     else:
         logger.info("⏭  PO WebSocket desactivado (PO_SSID no configurado)")
 
