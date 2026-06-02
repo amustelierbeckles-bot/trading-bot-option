@@ -70,7 +70,7 @@ async def cb_save_state(redis) -> None:
         }
         await redis.set("cb:state", json.dumps(payload), ex=7200)
     except Exception as e:
-        logger.debug("Persistencia estado CB en Redis fallo: %s", e)
+        logger.debug("⚠️ Persistencia estado CB en Redis fallo: %s", e)
 
 
 async def cb_load_state(redis) -> None:
@@ -94,7 +94,7 @@ async def cb_load_state(redis) -> None:
             _cb_state["blocked"],
         )
     except Exception as e:
-        logger.debug("Carga estado CB desde Redis fallo: %s", e)
+        logger.debug("⚠️ Carga estado CB desde Redis fallo: %s", e)
 
 
 def cb_is_blocked() -> bool:
@@ -109,6 +109,11 @@ def cb_is_blocked() -> bool:
         _cb_state.update({"blocked": False, "blocked_until": None,
                            "consecutive_losses": 0, "reason": ""})
         logger.info("✅ Circuit Breaker: cooldown expirado — bot reanudado")
+        from services.telegram_service import send_telegram
+        _fire_async(lambda: send_telegram(
+            f"✅ Circuit Breaker reabierto\n"
+            f"Cooldown de {CB_COOLDOWN_MINUTES} min expirado. Bot reanudado."
+        ))
         _schedule_cb_persist()
         return False
     return True

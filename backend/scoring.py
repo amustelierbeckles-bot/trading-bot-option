@@ -68,7 +68,7 @@ def quality_score(signal: dict, symbol: str = None,
 
     ortho_confluence = orthogonal_score(strategies_agreeing)
     cci_factor       = cci_sigmoid(cci_abs)
-    consensus        = 1.0 if n_agreeing == n_total else 0.0
+    consensus        = n_agreeing / n_total if n_total else 0.0
 
     trend_score = 0.5
     if symbol or ind:
