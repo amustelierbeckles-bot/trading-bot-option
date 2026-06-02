@@ -1,10 +1,6 @@
 /**
- * signalCardUtils.js — Constantes, mapas y helpers de SignalCard
+ * signalCardUtils.js — Mapa de activos PO + apertura de PocketOption.
  */
-
-export const SIGNAL_DURATION_SECONDS = 120;
-export const EXPIRY_MINUTES          = 2;
-export const BACKEND_URL             = process.env.REACT_APP_BACKEND_URL;
 
 // ── Mapa de activos → ID exacto de Pocket Option (formato: XXXYYY_otc) ───────
 // PocketOption usa guión bajo + minúscula "otc" en el hash de la URL.
@@ -37,37 +33,6 @@ export function getPOBaseUrl() {
     ? "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
     : "https://pocketoption.com/en/cabinet/quick-high-low/";
 }
-
-export const EXPIRY_MAP = { "1m": 60, "2m": 120, "3m": 180, "5m": 300 };
-
-// ── Helpers de color y badge ──────────────────────────────────────────────────
-export const getPayoutColor = (p) =>
-  p >= 92 ? "text-buy font-bold" : p >= 90 ? "text-buy" : "text-yellow-400";
-
-export const getQualityBadge = (q) =>
-  q >= 75 ? { text: "Limpio",    color: "bg-buy/10 text-buy border-buy/30" }
-: q >= 60 ? { text: "Aceptable", color: "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" }
-:           { text: "Sucio",     color: "bg-sell/10 text-sell border-sell/30" };
-
-export const getTimeColor = (timeRemaining) =>
-  !timeRemaining                        ? "text-muted-foreground"
-: timeRemaining.percentage > 66         ? "text-buy"
-: timeRemaining.percentage > 33         ? "text-yellow-400"
-:                                         "text-sell";
-
-// ── Nombre formateado para búsqueda en PO ────────────────────────────────────
-export const getAssetSearchName = (symbol) => {
-  const pair = symbol.replace("OTC_", "").replace(/[^A-Z]/gi, "");
-  return `${pair.slice(0, 3)}/${pair.slice(3)} OTC`;
-};
-
-// ── Formatea timestamp a UTC-5 ────────────────────────────────────────────────
-export const formatTimestampUTC5 = (raw) => {
-  const utcStr  = raw.endsWith("Z") || raw.includes("+") ? raw : raw + "Z";
-  const utcDate = new Date(utcStr);
-  const utc5    = new Date(utcDate.getTime() - 5 * 60 * 60 * 1000);
-  return `Generada: ${utc5.toISOString().slice(11, 19)} (UTC-5)`;
-};
 
 // ── Abre Pocket Option en nueva pestaña con el par copiado al portapapeles ───
 // NOTA: PocketOption ignora el hash de URL para selección de activos.
@@ -122,13 +87,17 @@ function _showPOReminder(assetId, signalType) {
   });
 
   const searchTerm = assetId.toLowerCase();
-  el.innerHTML = `
-    <div style="font-size:11px;color:#888;margin-bottom:4px;">Pega esto en el buscador de PO:</div>
-    <div style="font-size:22px;font-weight:bold;color:${color};letter-spacing:2px;">${searchTerm}</div>
-    <div style="font-size:16px;font-weight:bold;color:${color};margin-top:4px;">${dir}</div>
-    <div style="font-size:10px;color:#00FF94;margin-top:8px;">✓ Copiado al portapapeles (Ctrl+V)</div>
-    <div style="font-size:10px;color:#555;margin-top:2px;">Clic aquí para cerrar</div>
-  `;
+  const line = (text, css) => {
+    const d = document.createElement("div");
+    d.style.cssText = css;
+    d.textContent = text;
+    return d;
+  };
+  el.appendChild(line("Pega esto en el buscador de PO:", "font-size:11px;color:#888;margin-bottom:4px;"));
+  el.appendChild(line(searchTerm, `font-size:22px;font-weight:bold;color:${color};letter-spacing:2px;`));
+  el.appendChild(line(dir, `font-size:16px;font-weight:bold;color:${color};margin-top:4px;`));
+  el.appendChild(line("✓ Copiado al portapapeles (Ctrl+V)", "font-size:10px;color:#00FF94;margin-top:8px;"));
+  el.appendChild(line("Clic aquí para cerrar", "font-size:10px;color:#555;margin-top:2px;"));
 
   el.addEventListener("click", () => el.remove());
   // Auto-cierre en 30 segundos
