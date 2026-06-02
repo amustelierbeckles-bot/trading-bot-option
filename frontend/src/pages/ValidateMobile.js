@@ -9,7 +9,6 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const API_KEY = process.env.REACT_APP_API_KEY;
 
 export default function ValidateMobile() {
   const params   = new URLSearchParams(window.location.search);
@@ -61,7 +60,6 @@ export default function ValidateMobile() {
         cci:              signal?.cci || 0,
         signal_timestamp: signal?.timestamp || new Date().toISOString(),
       }, {
-        headers: API_KEY ? { "X-API-Key": API_KEY } : {},
         timeout: 10000
       });
       setSaved(true);

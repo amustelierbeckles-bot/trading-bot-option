@@ -348,6 +348,7 @@ app.add_middleware(RateLimitMiddleware)
 # ENRUTADORES
 # ============================================================================
 
+from routes.auth    import router as auth_router
 from routes.admin   import router as admin_router
 from routes.signals import router as signals_router
 from routes.trades  import router as trades_router
@@ -355,6 +356,7 @@ from routes.stats   import router as stats_router
 from routes.risk    import router as risk_router
 from routes.copytrade_internal import router as copytrade_internal_router
 
+app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(signals_router)
 app.include_router(trades_router)

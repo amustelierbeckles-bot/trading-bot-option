@@ -5,6 +5,10 @@ from pydantic import BaseModel
 from typing import List
 
 
+class LoginRequest(BaseModel):
+    password: str
+
+
 class SignalScanRequest(BaseModel):
     symbols: List[str] = ["OTC_EURUSD", "OTC_EURJPY", "OTC_GBPUSD"]
     timeframe: str = "1m"

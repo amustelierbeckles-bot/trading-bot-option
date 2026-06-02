@@ -7,7 +7,6 @@ import {
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const API_KEY = process.env.REACT_APP_API_KEY;
 
 const SYMBOLS = [
   { value: "OTC_EURUSD", label: "EUR/USD OTC" },
@@ -50,7 +49,6 @@ export default function Backtesting() {
     setResult(null);
     try {
       const { data } = await axios.post(`${API}/backtest`, form, {
-        headers: API_KEY ? { "X-API-Key": API_KEY } : {},
         timeout: 20000
       });
       setResult(data);

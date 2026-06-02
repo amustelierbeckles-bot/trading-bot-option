@@ -10,29 +10,17 @@ Routes de operaciones (trades).
 """
 import os
 from datetime import datetime, timedelta
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from bson import ObjectId
 
 from schemas import TradeResultModel
+from auth_deps import verify_session_or_key
 
 router = APIRouter()
 
 
 from utils import _parse_naive_utc
-
-
-async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    import hmac
-    current_key = os.getenv("API_SECRET_KEY", None)
-    if not current_key:
-        raise HTTPException(status_code=503, detail="API key not configured")
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="X-API-Key header required")
-    if not hmac.compare_digest(x_api_key, current_key):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return True
 
 
 @router.get("/api/trades")
@@ -53,7 +41,7 @@ async def get_trades(request: Request, limit: int = 50, skip: int = 0):
 
 @router.post("/api/trades")
 async def create_trade(trade: TradeResultModel, request: Request,
-                       auth: bool = Depends(_verify_api_key)):
+                       auth: bool = Depends(verify_session_or_key)):
     now       = datetime.utcnow()
     use_mongo = request.app.state.use_mongo
 
@@ -77,7 +65,7 @@ async def create_trade(trade: TradeResultModel, request: Request,
 
 @router.put("/api/trades/{trade_id}")
 async def update_trade(trade_id: str, trade: TradeResultModel, request: Request,
-                       auth: bool = Depends(_verify_api_key)):
+                       auth: bool = Depends(verify_session_or_key)):
     use_mongo  = request.app.state.use_mongo
     update_doc = {**trade.dict(exclude_unset=True), "updated_at": datetime.utcnow()}
 
@@ -98,7 +86,7 @@ async def update_trade(trade_id: str, trade: TradeResultModel, request: Request,
 
 @router.delete("/api/trades/{trade_id}")
 async def delete_trade(trade_id: str, request: Request,
-                       auth: bool = Depends(_verify_api_key)):
+                       auth: bool = Depends(verify_session_or_key)):
     use_mongo = request.app.state.use_mongo
 
     if use_mongo:

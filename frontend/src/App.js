@@ -6,11 +6,13 @@ import Performance   from "./pages/Performance";
 import ValidateMobile from "./pages/ValidateMobile";
 import { Toaster }   from "./components/ui/sonner";
 import ErrorBoundary from "./components/ErrorBoundary";
+import LoginGate     from "./components/LoginGate";
 
 function App() {
   return (
     <div className="App">
       <Toaster position="top-right" />
+      <LoginGate>
       <BrowserRouter>
         <ErrorBoundary>
           <Routes>
@@ -21,6 +23,7 @@ function App() {
           </Routes>
         </ErrorBoundary>
       </BrowserRouter>
+      </LoginGate>
     </div>
   );
 }

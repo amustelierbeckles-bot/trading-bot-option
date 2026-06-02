@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { isSignalLive } from "../utils/signalTime";
 import {
-  API, API_KEY, T, sc, ALL_PAIRS, PANE_KEY,
+  API, T, sc, ALL_PAIRS, PANE_KEY,
   initPanes, normalizeStats, normalizeMarketAsset,
 } from "../utils/dashboardUtils";
 import { onWLUpdate } from "../utils/wlHistory";
@@ -112,7 +112,6 @@ export default function useDashboard() {
     try {
       const body    = { balance, risk_pct: 5.0, session_start: sessStart };
       const headers = { "Content-Type": "application/json" };
-      if (API_KEY) headers["X-API-Key"] = API_KEY;
       const d = await fetch(`${API}/api/risk/status`, {
         method: "POST", headers, body: JSON.stringify(body),
       }).then(r => r.json());
@@ -145,7 +144,6 @@ export default function useDashboard() {
     localStorage.setItem("radar_sess_start", now);
     try {
       const headers = {};
-      if (API_KEY) headers["X-API-Key"] = API_KEY;
       await fetch(`${API}/api/risk/reset-circuit-breaker`, { method: "POST", headers });
     } catch {}
     log("🔄 Nueva sesión iniciada", T.call);
@@ -176,7 +174,6 @@ export default function useDashboard() {
     log("▶ Escaneo manual…", T.call);
     try {
       const headers = {};
-      if (API_KEY) headers["X-API-Key"] = API_KEY;
       await fetch(`${API}/api/scan`, { method: "POST", headers });
       await fetchSig();
       log("✓ Scan completado", T.call);

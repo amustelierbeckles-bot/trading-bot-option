@@ -12,29 +12,15 @@ Routes de administración, salud y notificaciones.
 import asyncio
 import os
 from datetime import datetime
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from circuit_breaker import cb_get_state
 from market_session import get_market_session
 from po_websocket import OTC_SYMBOL_MAP
+from auth_deps import verify_session_or_key
 
 router = APIRouter()
-
-
-# ── Auth helpers (duplicados aquí para que las rutas sean autónomas) ──────────
-async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    current_key = os.getenv("API_SECRET_KEY", None)
-    if not current_key:
-        raise HTTPException(status_code=503, detail="API key not configured")
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="X-API-Key header required",
-                            headers={"WWW-Authenticate": "ApiKey"})
-    import hmac
-    if not hmac.compare_digest(x_api_key, current_key):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return True
 
 
 @router.get("/")
@@ -90,7 +76,7 @@ async def health_check(request: Request):
 
 
 @router.post("/api/internal/pip_tracker/sweep")
-async def pip_tracker_sweep(request: Request, _: bool = Depends(_verify_api_key)):
+async def pip_tracker_sweep(request: Request, _: bool = Depends(verify_session_or_key)):
     """Overnight sweep: intenta recuperar slots nulos por fallo de infra vía buffer del collector."""
     if not getattr(request.app.state, "use_mongo", False):
         raise HTTPException(status_code=503, detail="MongoDB no disponible")
@@ -100,7 +86,7 @@ async def pip_tracker_sweep(request: Request, _: bool = Depends(_verify_api_key)
 
 
 @router.post("/api/admin/test-email")
-async def test_email(request: Request, _: bool = Depends(_verify_api_key)):
+async def test_email(request: Request, _: bool = Depends(verify_session_or_key)):
     """Envía un email de prueba con los datos reales de las últimas 24h."""
     email_svc = getattr(request.app.state, "email_service", None)
     if not email_svc:
@@ -180,10 +166,10 @@ async def _run_notification_test(app=None) -> dict:
 
 
 @router.post("/api/notifications/test")
-async def test_notifications(request: Request, _: bool = Depends(_verify_api_key)):
+async def test_notifications(request: Request, _: bool = Depends(verify_session_or_key)):
     return await _run_notification_test(app=request.app)
 
 
 @router.post("/api/whatsapp/test")
-async def test_whatsapp(request: Request, _: bool = Depends(_verify_api_key)):
+async def test_whatsapp(request: Request, _: bool = Depends(verify_session_or_key)):
     return await _run_notification_test(app=request.app)

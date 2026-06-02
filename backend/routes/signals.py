@@ -15,14 +15,14 @@ Routes de señales.
 import asyncio
 import os
 from datetime import datetime, timedelta
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from schemas import SignalScanRequest, BacktestRequest
 from assets import get_asset_name, get_asset_price, ASSET_PRICES
 from scoring import quality_score as _quality_score
 from calibration import get_dynamic_threshold
+from auth_deps import verify_session_or_key
 
 router = APIRouter()
 
@@ -32,21 +32,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    import hmac
-    current_key = os.getenv("API_SECRET_KEY", None)
-    if not current_key:
-        raise HTTPException(status_code=503, detail="API key not configured")
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="X-API-Key header required")
-    if not hmac.compare_digest(x_api_key, current_key):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return True
-
-
 @router.post("/api/signals/scan")
 async def scan_signals(scan_request: SignalScanRequest, request: Request,
-                       auth: bool = Depends(_verify_api_key)):
+                       auth: bool = Depends(verify_session_or_key)):
     from data_provider import get_provider, get_simulated_indicators, get_indicators_for
     from assets import generate_pocket_option_url
     from services.telegram_service import send_signal_telegram
