@@ -29,7 +29,7 @@ export default function ValidateMobile() {
 
   const fetchSignal = async () => {
     try {
-      const { data } = await axios.get(`${API}/signals/active`);
+      const { data } = await axios.get(`${API}/signals/active`, { timeout: 10000 });
       const found = data.signals?.find(s => s.id === signalId)
                  || data.find?.(s => s.id === signalId);
       if (found) {
@@ -61,7 +61,8 @@ export default function ValidateMobile() {
         cci:              signal?.cci || 0,
         signal_timestamp: signal?.timestamp || new Date().toISOString(),
       }, {
-        headers: API_KEY ? { "X-API-Key": API_KEY } : {}
+        headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+        timeout: 10000
       });
       setSaved(true);
     } catch (e) {

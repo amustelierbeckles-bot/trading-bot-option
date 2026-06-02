@@ -17,7 +17,7 @@ export default function Performance() {
   const fetchStats = useCallback(async () => {
     setLoadingStats(true);
     try {
-      const { data } = await axios.get(`${API}/trades/stats?days=${period}`);
+      const { data } = await axios.get(`${API}/trades/stats?days=${period}`, { timeout: 10000 });
       setStats(data);
     } catch {
       toast.error("Error cargando estadísticas");
@@ -29,7 +29,7 @@ export default function Performance() {
   const fetchCalibration = useCallback(async () => {
     setLoadingCal(true);
     try {
-      const { data } = await axios.get(`${API}/calibration`);
+      const { data } = await axios.get(`${API}/calibration`, { timeout: 10000 });
       setCalibration(data);
       if (data.calibrated) {
         toast.success(`Calibración aplicada — umbral: ${data.optimal_threshold.toFixed(2)}`);
@@ -44,7 +44,7 @@ export default function Performance() {
   const fetchExecution = useCallback(async () => {
     setLoadingExec(true);
     try {
-      const { data } = await axios.get(`${API}/performance/execution?days=${period}`);
+      const { data } = await axios.get(`${API}/performance/execution?days=${period}`, { timeout: 10000 });
       setExecution(data);
     } catch {
       // silencioso — sección aparece cuando haya datos
@@ -316,7 +316,7 @@ export default function Performance() {
         {stats && stats.by_hour && Object.keys(stats.by_hour).length > 0 && (
           <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6">
             <h2 className="text-sm font-mono text-gray-400 uppercase tracking-wider mb-4">
-              Win Rate por Hora (UTC)
+              Win Rate por Hora (UTC · local = UTC−4)
             </h2>
             <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
               {Object.entries(stats.by_hour)
@@ -332,7 +332,9 @@ export default function Performance() {
                         isOverlap ? "ring-1 ring-yellow-600/50" : ""
                       }`}
                     >
-                      <div className="text-xs text-gray-500 font-mono">{hour}:00</div>
+                      <div className="text-xs text-gray-500 font-mono">
+                        {hour}:00 <span className="text-gray-600">({((Number(hour) - 4 + 24) % 24).toString().padStart(2, "0")} loc)</span>
+                      </div>
                       <div className={`text-sm font-bold font-mono ${wrColor(data.win_rate)}`}>
                         {data.win_rate}%
                       </div>
@@ -345,7 +347,7 @@ export default function Performance() {
                 })}
             </div>
             <p className="text-xs text-gray-600 mt-3 font-mono">
-              Las horas con mejor rendimiento son las del solapamiento Londres+NY (13-17 UTC)
+              Las horas con mejor rendimiento son las del solapamiento Londres+NY (13-17 UTC = 09-13 hora local UTC−4)
             </p>
           </div>
         )}

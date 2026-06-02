@@ -50,7 +50,8 @@ export default function Backtesting() {
     setResult(null);
     try {
       const { data } = await axios.post(`${API}/backtest`, form, {
-        headers: API_KEY ? { "X-API-Key": API_KEY } : {}
+        headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+        timeout: 20000
       });
       setResult(data);
       toast.success(`Backtest completado — ${data.summary}`);
