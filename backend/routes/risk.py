@@ -11,11 +11,9 @@ Routes de gestión de riesgo y sistema Antifragile.
   GET  /api/calibration/status
   POST /api/calibration/recalibrate
 """
-import os
 from datetime import datetime, timedelta
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from circuit_breaker import cb_get_state, cb_reset, cb_is_blocked
 from antifragile import (
@@ -24,20 +22,9 @@ from antifragile import (
 )
 from calibration import get_dynamic_threshold, set_dynamic_threshold, compute_optimal_threshold
 from schemas import RiskStatusRequest
+from auth_deps import verify_session_or_key
 
 router = APIRouter()
-
-
-async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    import hmac
-    current_key = os.getenv("API_SECRET_KEY", None)
-    if not current_key:
-        raise HTTPException(status_code=503, detail="API key not configured")
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="X-API-Key header required")
-    if not hmac.compare_digest(x_api_key, current_key):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return True
 
 
 @router.get("/api/risk/status")
@@ -73,7 +60,7 @@ async def get_risk_status(request: Request):
 
 @router.post("/api/risk/status")
 async def update_risk_status(body: RiskStatusRequest, request: Request,
-                             auth: bool = Depends(_verify_api_key)):
+                             auth: bool = Depends(verify_session_or_key)):
     """Actualiza umbral dinámico u otras configuraciones de riesgo."""
     if body.min_quality_threshold is not None:
         set_dynamic_threshold(body.min_quality_threshold)
@@ -81,7 +68,7 @@ async def update_risk_status(body: RiskStatusRequest, request: Request,
 
 
 @router.post("/api/risk/reset")
-async def reset_risk(request: Request, auth: bool = Depends(_verify_api_key)):
+async def reset_risk(request: Request, auth: bool = Depends(verify_session_or_key)):
     """Resetea Circuit Breaker, Martingale y Correlation Locks de golpe."""
     cb_reset()
     _martingale_state.clear()
@@ -92,7 +79,7 @@ async def reset_risk(request: Request, auth: bool = Depends(_verify_api_key)):
 
 @router.post("/api/risk/circuit-breaker/reset")
 @router.post("/api/circuit-breaker/reset")
-async def reset_circuit_breaker(auth: bool = Depends(_verify_api_key)):
+async def reset_circuit_breaker(auth: bool = Depends(verify_session_or_key)):
     cb_reset()
     return {"success": True, "circuit_breaker": cb_get_state()}
 
@@ -116,7 +103,7 @@ async def get_antifragile_status():
 
 
 @router.post("/api/antifragile/reset")
-async def reset_antifragile(auth: bool = Depends(_verify_api_key)):
+async def reset_antifragile(auth: bool = Depends(verify_session_or_key)):
     _martingale_state.clear()
     _correlation_locks.clear()
     _timeframe_overrides.clear()
@@ -145,7 +132,7 @@ async def get_calibration_status(request: Request):
 
 
 @router.post("/api/calibration/recalibrate")
-async def recalibrate(request: Request, auth: bool = Depends(_verify_api_key)):
+async def recalibrate(request: Request, auth: bool = Depends(verify_session_or_key)):
     """Fuerza una re-calibración del umbral dinámico usando los trades actuales."""
     use_mongo = request.app.state.use_mongo
 
