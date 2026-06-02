@@ -9,7 +9,7 @@
 
 ## Estado operativo (02/04/2026)
 
-- Bot corriendo en VPS, `ACCOUNT_MODE=real`, `AUTO_EXECUTE=true`
+- Bot corriendo en VPS, `ACCOUNT_MODE=demo` (isDemo=1, uid=120600861), `AUTO_EXECUTE=true`
 - Proxy residencial activo: `31.98.14.221:5898` (nskpjqbk)
 - Auth PO: `user_init + id + secret` → confirmado con `updateAssets`
 - Suscripción: `subscribeSymbol + #symbol_otc` → 20 pares sin 1005

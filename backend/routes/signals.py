@@ -28,13 +28,15 @@ router = APIRouter()
 
 
 from utils import _parse_naive_utc
+import logging
+logger = logging.getLogger(__name__)
 
 
 async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
     import hmac
     current_key = os.getenv("API_SECRET_KEY", None)
     if not current_key:
-        return True
+        raise HTTPException(status_code=503, detail="API key not configured")
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header required")
     if not hmac.compare_digest(x_api_key, current_key):
@@ -59,7 +61,7 @@ async def scan_signals(scan_request: SignalScanRequest, request: Request,
 
     for symbol in scan_request.symbols:
         try:
-            ind = await get_indicators_for(symbol, "1min")
+            ind = await get_indicators_for(symbol)
         except Exception:
             ind = get_simulated_indicators(symbol)
 
@@ -173,8 +175,8 @@ async def get_pre_alerts(request: Request):
                 fresh[sym] = doc
             else:
                 request.app.state.pre_alerts_store.pop(sym, None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Limpieza pre-alerts fallo: %s", e)
     return {"pre_alerts": fresh, "count": len(fresh)}
 
 

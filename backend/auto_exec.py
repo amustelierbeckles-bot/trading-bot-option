@@ -14,9 +14,20 @@ from typing import Optional
 
 _last_wr_blocked: bool = False
 
+# Pares con dirección permitida única (pip_diff confirmado unidireccional).
+# Formato: {"SYMBOL": "PUT"|"CALL"}. Señales en dirección contraria se descartan silenciosamente.
+DIRECTION_FILTER: dict = {
+    "OTC_EURGBP": "PUT",   # PUT 81% WR (83% NY/80% Asia); CALL 11-31% — sesgo bajista estructural OTC
+    "OTC_GBPUSD": "PUT",   # PUT 82% ambas sesiones; CALL 12% — idéntico patrón
+    "OTC_USDCHF": "PUT",   # PUT 71% WR; CALL 42% — sesgo bajista OTC mayo 2026
+    "OTC_NZDUSD": "CALL",  # CALL 69% WR; PUT 38% — sesgo alcista OTC mayo 2026
+    "OTC_AUDUSD": "CALL",  # CALL 61% WR; PUT 35% — sesgo alcista OTC mayo 2026
+}
+
 # Alerta Telegram si PO no entrega ticks en N ciclos seguidos (INTERVAL ~120s → 5 ≈ 10 min).
 _po_no_data_cycles: int = 0
 PO_NO_DATA_ALERT_CYCLES: int = 5
+PO_AUTO_RECONNECT_CYCLES: int = 10  # 20 min sin ticks → forza reconexión
 
 # Rotación round-robin para TwelveData (fallback PO y modo td_only).
 _td_fallback_queue: deque = deque()
@@ -46,6 +57,7 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
     from services.telegram_service import tg_api
 
     global _last_wr_blocked
+    result = None
     try:
         if cb_is_blocked():
             logger.warning("🛑 Auto-exec bloqueado — Circuit Breaker activo")
@@ -115,8 +127,24 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
 
         from po_websocket import get_po_provider
         po = get_po_provider()
-        if not po or not po.is_connected:
-            logger.warning("🛑 Auto-exec bloqueado — PO WebSocket no conectado")
+        executor      = None
+        executor_type = None
+
+        if po and po.is_connected:
+            executor      = po
+            executor_type = "po"
+        else:
+            try:
+                from deriv_api import get_deriv_provider
+                dp = get_deriv_provider()
+                if dp and dp.is_connected:
+                    executor      = dp
+                    executor_type = "deriv"
+            except ImportError:
+                pass
+
+        if not executor:
+            logger.warning("🛑 Auto-exec bloqueado — ningún executor disponible (PO ni Deriv)")
             return
 
         symbol      = doc.get("symbol", "")
@@ -151,13 +179,25 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
         else:
             is_demo = os.getenv("ACCOUNT_MODE", "demo").lower() == "demo"
 
-        result = await po.place_trade(
+        result = await executor.place_trade(
             symbol         = symbol,
             direction      = direction,
             amount         = amount,
             expiry_seconds = 120,
             is_demo        = is_demo,
         )
+        # Retry único si el fallo es por WS cerrándose durante reconexión (code 1000)
+        if (result and result.get("status") == "error"
+                and "1000" in str(result.get("reason", ""))):
+            logger.warning("⚠️  WS cerrado durante place_trade — retry en 3s")
+            await asyncio.sleep(3)
+            result = await executor.place_trade(
+                symbol         = symbol,
+                direction      = direction,
+                amount         = amount,
+                expiry_seconds = 120,
+                is_demo        = is_demo,
+            )
         if not result or result.get("status") == "error":
             logger.error(
                 "❌ place_trade falló: %s",
@@ -171,26 +211,49 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             "execution_mode":    "auto",
             "executed_at":       now,
             "executed_amount":   amount,
-            "po_order_id":       result.get("order_id"),
-            "po_is_demo":        is_demo,
             "auto_execute_mode": auto_mode,
+            "executor":          executor_type,
         }
-
-        if app.state.use_mongo and sig_id:
-            from bson import ObjectId
-            try:
-                await app.state.db.signals.update_one(
-                    {"_id": ObjectId(sig_id)},
-                    {"$set": update},
-                )
-            except Exception:
-                pass
+        if executor_type == "deriv":
+            update["deriv_order_id"] = result.get("order_id")
+            update["deriv_is_demo"]  = is_demo
         else:
-            for s in app.state.signals_store:
-                if s.get("id") == sig_id:
-                    s.update(update)
-                    s["executed_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-                    break
+            update["po_order_id"] = result.get("order_id")
+            update["po_is_demo"]  = is_demo
+
+        # Signal update → background, no bloquea camino crítico
+        async def _update_signal():
+            if app.state.use_mongo and sig_id:
+                from bson import ObjectId
+                try:
+                    await app.state.db.signals.update_one(
+                        {"_id": ObjectId(sig_id)},
+                        {"$set": update},
+                    )
+                except Exception as e:
+                    logger.debug("Paso opcional auto-exec fallo: %s", e)
+            else:
+                for s in app.state.signals_store:
+                    if s.get("id") == sig_id:
+                        s.update(update)
+                        s["executed_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                        break
+        asyncio.create_task(_update_signal())
+
+        # Pip tracker: captura precios en T+1m/3m/5m/10m — análisis WR×timeframe
+        if sig_id and getattr(app.state, "use_mongo", False):
+            from pip_tracker import track_signal as _track_signal
+            _pt = asyncio.create_task(
+                _track_signal(
+                    sig_id, symbol, direction,
+                    float(doc.get("entry_price", doc.get("price", 0))),
+                    now, app.state.db,
+                )
+            )
+            _pt.add_done_callback(
+                lambda t: logger.warning("pip_tracker task error: %s", t.exception())
+                if not t.cancelled() and t.exception() else None
+            )
 
         _oid = result.get("order_id")
         order_log = (str(_oid)[:16] if _oid is not None else "?")
@@ -200,7 +263,6 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             order_log, result.get("status", "?")
         )
 
-        audit_id  = None
         trade_doc = {
             "signal_id":         doc.get("id", ""),
             "symbol":            symbol,
@@ -210,35 +272,31 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             "quality_score":     quality_score,
             "execution_mode":    "auto",
             "amount":            amount,
-            "po_order_id":       result.get("order_id"),
-            "po_status":         result.get("status"),
+            "order_status":      result.get("status"),
             "audit_confidence":  "pending",
             "result":            None,
             "created_at":        now,
             "session":           doc.get("session", ""),
             "strategies":        doc.get("strategies_agreeing", []),
-            "po_is_demo":        is_demo,
+            "is_demo":           is_demo,
+            "executor":          executor_type,
             "auto_execute_mode": auto_mode,
             "source":            "auto_exec",
         }
-        if app and app.state.use_mongo:
-            try:
-                ins      = await app.state.db.trades.insert_one(trade_doc)
-                audit_id = str(ins.inserted_id)
-                logger.info("📝 Trade auto-exec registrado en trades | audit_id=%s", audit_id)
-            except Exception as e:
-                logger.warning("⚠️  No se pudo registrar auto-exec: %s", e)
+        if executor_type == "deriv":
+            trade_doc["deriv_order_id"] = result.get("order_id")
+            trade_doc["deriv_is_demo"]  = is_demo
         else:
-            trade_doc["id"] = f"auto_{int(now.timestamp() * 1000)}"
-            trade_doc["created_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-            app.state.trades_store.append(trade_doc)
-            audit_id = trade_doc["id"]
+            trade_doc["po_order_id"] = result.get("order_id")
+            trade_doc["po_status"]   = result.get("status")
+            trade_doc["po_is_demo"]  = is_demo
 
-        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        demo_tag = "🏷 <b>DEMO</b> — cuenta de práctica PO\n" if is_demo else ""
+        chat_id       = os.getenv("TELEGRAM_CHAT_ID", "")
+        token         = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        platform_name = "Deriv" if executor_type == "deriv" else "PocketOption"
+        demo_tag      = f"🏷 <b>DEMO</b> — cuenta de práctica {platform_name}\n" if is_demo else ""
         auto_msg_text = (
-            f"🤖 <b>AUTO-EXEC</b>\n"
+            f"🤖 <b>AUTO-EXEC [{platform_name}]</b>\n"
             f"{demo_tag}\n"
             f"Par: <b>{doc.get('asset_name', symbol)}</b>\n"
             f"Dirección: <b>{direction.upper()}</b>\n"
@@ -248,13 +306,46 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
             f"Estado: <code>{result.get('status','?')}</code>\n\n"
             f"⏰ Verificando resultado en 2 minutos automáticamente..."
         )
+
+        # Trade insert + Telegram en paralelo
+        async def _insert_trade() -> Optional[str]:
+            if app and app.state.use_mongo:
+                try:
+                    from pymongo import ReturnDocument
+                    # Upsert idempotente por signal_id: el índice único signal_id_1
+                    # puede chocar si verify_every_signal (audit) ya insertó el doc.
+                    # update+upsert fusiona en vez de fallar con E11000.
+                    res = await app.state.db.trades.find_one_and_update(
+                        {"signal_id": trade_doc["signal_id"]},
+                        {"$set": trade_doc},
+                        upsert=True,
+                        return_document=ReturnDocument.AFTER,
+                    )
+                    _id = str(res["_id"])
+                    logger.info("📝 Trade auto-exec registrado en trades | audit_id=%s", _id)
+                    return _id
+                except Exception as e:
+                    logger.warning("⚠️  No se pudo registrar auto-exec: %s", e)
+                    return None
+            else:
+                trade_doc["id"] = f"auto_{int(now.timestamp() * 1000)}"
+                trade_doc["created_at"] = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                app.state.trades_store.append(trade_doc)
+                return trade_doc["id"]
+
         if token and chat_id:
-            tg_result = await tg_api("sendMessage", {
-                "chat_id":    chat_id,
-                "text":       auto_msg_text,
-                "parse_mode": "HTML",
-            })
-            auto_msg_id = tg_result.get("result", {}).get("message_id")
+            gathered = await asyncio.gather(
+                _insert_trade(),
+                tg_api("sendMessage", {
+                    "chat_id":    chat_id,
+                    "text":       auto_msg_text,
+                    "parse_mode": "HTML",
+                }),
+                return_exceptions=True,
+            )
+            audit_id    = gathered[0] if not isinstance(gathered[0], Exception) else None
+            tg_result   = gathered[1] if not isinstance(gathered[1], Exception) else {}
+            auto_msg_id = tg_result.get("result", {}).get("message_id") if isinstance(tg_result, dict) else None
 
             if audit_id and auto_msg_id and app:
                 asyncio.create_task(autonomous_audit(
@@ -262,9 +353,32 @@ async def _auto_execute_trade(doc: dict, app, quality_score: float):
                 ))
                 logger.info("🔄 Auditoría autónoma lanzada para auto-exec | %s %s",
                             direction.upper(), symbol)
+        else:
+            await _insert_trade()
 
     except Exception as e:
-        logger.error("❌ Error en auto-exec: %s", e)
+        if isinstance(result, dict) and result.get("order_id"):
+            logger.critical(
+                "🚨 TRADE HUÉRFANO — orden %s colocada en broker pero registro/audit falló: %s",
+                result.get("order_id"), e,
+            )
+            try:
+                from services.telegram_service import tg_api
+                _cid = os.getenv("TELEGRAM_CHAT_ID", "")
+                if _cid:
+                    await tg_api("sendMessage", {
+                        "chat_id": _cid,
+                        "text": (
+                            f"🚨 <b>TRADE HUÉRFANO</b>\n"
+                            f"Orden <code>{str(result.get('order_id'))[:16]}</code> colocada "
+                            f"pero NO registrada/auditada.\nRevisar manualmente.\nError: {e}"
+                        ),
+                        "parse_mode": "HTML",
+                    })
+            except Exception as e:
+                logger.debug("Paso opcional auto-exec fallo: %s", e)
+        else:
+            logger.error("❌ Error en auto-exec: %s", e)
 
 
 async def _auto_scan_loop(app):
@@ -293,7 +407,7 @@ async def _auto_scan_loop(app):
     # (caché 300s + este tope reducen req/día frente al límite del plan).
     MAX_TD_FALLBACK_PER_CYCLE = 5
     MIN_CONFIDENCE   = 0.68
-    MIN_QUALITY_BASE = 0.55
+    MIN_QUALITY_FLOOR = 0.55  # piso duro: la sesión no puede bajar el umbral de calidad por debajo de esto
     MAX_PER_CYCLE    = 2
     COOLDOWN_SECONDS = 240
     MAX_STORE        = 20
@@ -363,16 +477,22 @@ async def _auto_scan_loop(app):
                         effective_base = max(0.45, effective_base - 0.05)
                     elif hour_wr < 0.45:
                         effective_base = min(0.80, effective_base + 0.07)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Paso opcional auto-exec fallo: %s", e)
 
             session       = get_market_session(now.hour, now.minute)
             QUALITY_PAIRS = session["pairs"] if session["pairs"] else ALL_20_PAIRS
-            MIN_QUALITY   = effective_base - session["quality_boost"]
+            MIN_QUALITY   = max(MIN_QUALITY_FLOOR, effective_base - session["quality_boost"])
 
             if not session["active"]:
                 logger.info("🌙 [%s] %s — sin escaneo. Próximo ciclo en %ds.",
                             session["display"], session["description"], INTERVAL)
+                await asyncio.sleep(INTERVAL)
+                continue
+
+            # Filtro borde de hora: evitar primeros/últimos 5 min (spreads altos, candles incompletas)
+            if now.minute < 5 or now.minute >= 55:
+                logger.info("⏰ [borde-hora] min=%d — pausa. Próximo ciclo en %ds.", now.minute, INTERVAL)
                 await asyncio.sleep(INTERVAL)
                 continue
 
@@ -459,6 +579,24 @@ async def _auto_scan_loop(app):
                         indicators_map[sym]  = ind
                         po_ready += 1
 
+                # Pares sin tick PO → collector-bars (OTC real, 0 créditos TD).
+                # Fuente independiente del WebSocket po_prov y de TwelveData.
+                from data_provider import _try_collector_bars
+                coll_ready    = 0
+                td_ready      = 0
+                pending_coll = [s for s in pairs_to_scan if s not in indicators_map]
+                if pending_coll:
+                    coll_results = await asyncio.gather(
+                        *[_try_collector_bars(s) for s in pending_coll],
+                        return_exceptions=True,
+                    )
+                    for sym, cind in zip(pending_coll, coll_results):
+                        if isinstance(cind, Exception) or cind is None:
+                            continue
+                        indicators_map[sym] = cind
+                        coll_ready += 1
+
+                if po_prov and not po_prov._kill_switch_active:
                     # Pares sin tick reciente → TwelveData fallback (round-robin, max 5/ciclo).
                     if provider and provider.is_configured:
                         pending = [s for s in pairs_to_scan if s not in indicators_map]
@@ -480,6 +618,7 @@ async def _auto_scan_loop(app):
                                 if isinstance(ind, Exception) or ind is None:
                                     continue
                                 indicators_map[sym] = ind
+                                td_ready += 1
 
                 # Alerta si PO está conectado pero sin ticks (SSID expirado, etc.)
                 if po_ready == 0 and po_prov and not po_prov._kill_switch_active:
@@ -493,14 +632,26 @@ async def _auto_scan_loop(app):
                             f"El bot opera con TwelveData como fallback.\n"
                             f"Verifica el SSID o el proxy."
                         ))
+                    elif _po_no_data_cycles >= PO_AUTO_RECONNECT_CYCLES:
+                        logger.warning(
+                            "🔄 Auto-reconexión PO WebSocket — %d ciclos sin ticks (~%d min)",
+                            _po_no_data_cycles, _po_no_data_cycles * 2
+                        )
+                        try:
+                            if po_prov._ws:
+                                await po_prov._ws.close()
+                        except Exception as e:
+                            logger.debug("Cierre WS auto-exec fallo: %s", e)
+                        _po_no_data_cycles = 0
                 else:
                     _po_no_data_cycles = 0
 
                 fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
-                td_fallback   = len(pairs_to_scan) - po_ready
+                sim_count     = len(pairs_to_scan) - po_ready - coll_ready - td_ready
                 logger.info(
-                    "⚡ PO WebSocket %d/%d pares | TwelveData fallback %d pares | %.1fs",
-                    po_ready, len(pairs_to_scan), td_fallback, fetch_elapsed,
+                    "⚡ Fuentes %d/%d | PO=%d collector=%d TD=%d sim=%d | %.1fs",
+                    po_ready + coll_ready + td_ready, len(pairs_to_scan),
+                    po_ready, coll_ready, td_ready, sim_count, fetch_elapsed,
                 )
 
             else:
@@ -508,11 +659,26 @@ async def _auto_scan_loop(app):
                 # Round-robin: cubre todos los pares de sesión en N ciclos en lugar de
                 # intentarlos todos a la vez. El cache TTL=300s evita fetches redundantes.
                 # MAX_TD_PURE_CYCLE configurable (default 8) para ajustar cobertura/cuota.
-                if provider and provider.is_configured:
+                # Collector-bars primero (OTC real, 0 créditos): cubre lo que pueda
+                # antes de gastar cuota TD.
+                from data_provider import _try_collector_bars as _coll_bars
+                coll_results = await asyncio.gather(
+                    *[_coll_bars(s) for s in pairs_to_scan],
+                    return_exceptions=True,
+                )
+                coll_ready = 0
+                for sym, cind in zip(pairs_to_scan, coll_results):
+                    if isinstance(cind, Exception) or cind is None:
+                        continue
+                    indicators_map[sym] = cind
+                    coll_ready += 1
+
+                pending_td = [s for s in pairs_to_scan if s not in indicators_map]
+                if provider and provider.is_configured and pending_td:
                     max_pure = int(os.getenv("MAX_TD_PURE_CYCLE", "8"))
 
-                    if not _td_fallback_queue or set(_td_fallback_queue) != set(pairs_to_scan):
-                        _td_fallback_queue = deque(pairs_to_scan)
+                    if not _td_fallback_queue or set(_td_fallback_queue) != set(pending_td):
+                        _td_fallback_queue = deque(pending_td)
 
                     n_pick       = min(max_pure, len(_td_fallback_queue))
                     pairs_for_td = []
@@ -546,13 +712,17 @@ async def _auto_scan_loop(app):
                         if isinstance(ind, Exception) or ind is None:
                             continue
                         indicators_map[sym] = ind
-                else:
-                    indicators_map = {sym: get_simulated_indicators(sym) for sym in pairs_to_scan}
+                elif not (provider and provider.is_configured):
+                    # Sin TD ni collector → simulado solo para pares aún vacíos.
+                    for sym in pairs_to_scan:
+                        indicators_map.setdefault(sym, get_simulated_indicators(sym))
 
                 fetch_elapsed = (datetime.utcnow() - fetch_start).total_seconds()
+                td_ready      = len(indicators_map) - coll_ready
                 logger.info(
-                    "📡 [td_only] TwelveData %d/%d pares activos | %.1fs",
-                    len(indicators_map), len(pairs_to_scan), fetch_elapsed,
+                    "📡 [td_only] Fuentes %d/%d | collector=%d TD=%d | %.1fs",
+                    len(indicators_map), len(pairs_to_scan),
+                    coll_ready, td_ready, fetch_elapsed,
                 )
 
             real_count      = sum(1 for s in pairs_to_scan if indicators_map.get(s) and indicators_map[s].is_real)
@@ -619,6 +789,37 @@ async def _auto_scan_loop(app):
                 if signal["confidence"] < MIN_CONFIDENCE:
                     continue
 
+                # Filtro de consenso DURO: si no hay ≥N estrategias de acuerdo, se
+                # descarta la señal por completo — no se reporta a Telegram ni se ejecuta.
+                # Unifica el criterio de emisión y de auto-exec en un solo gate.
+                min_strats = int(os.getenv("MIN_STRATEGIES_AGREEING", "3"))
+                if len(signal.get("strategies_agreeing", [])) < min_strats:
+                    logger.debug(
+                        "⏭  %s %s descartada — consenso %d < %d estrategias (no se reporta)",
+                        signal["type"], symbol,
+                        len(signal.get("strategies_agreeing", [])), min_strats,
+                    )
+                    continue
+
+                # Gate CCI: señales con |CCI| bajo carecen de impulso direccional.
+                # CCI < 100 → estrategias no-CCI ganaron el consenso sobreponiendo al CCI neutro.
+                min_cci_abs = float(os.getenv("MIN_CCI_ABS", "100"))
+                if abs(signal.get("cci", 0)) < min_cci_abs:
+                    logger.debug(
+                        "⏭  %s %s CCI=%.1f < %.0f — skip CCI gate",
+                        signal["type"], symbol, signal.get("cci", 0), min_cci_abs,
+                    )
+                    continue
+
+                # Gate dirección: pares con dirección única confirmada por pip_diff.
+                allowed_dir = DIRECTION_FILTER.get(symbol)
+                if allowed_dir and signal["type"].upper() != allowed_dir:
+                    logger.debug(
+                        "⏭  %s %s — dirección bloqueada (solo %s permitido)",
+                        signal["type"], symbol, allowed_dir,
+                    )
+                    continue
+
                 score = calc_quality_score(signal, symbol, ind)
 
                 pair_min_quality = MIN_QUALITY
@@ -629,8 +830,8 @@ async def _auto_scan_loop(app):
                         pair_data = cached_stats.get("by_pair", {}).get(symbol, {})
                         if pair_data.get("degraded", False):
                             pair_min_quality = MIN_QUALITY + 0.10
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Paso opcional auto-exec fallo: %s", e)
 
                 if score < pair_min_quality:
                     continue
@@ -652,8 +853,8 @@ async def _auto_scan_loop(app):
                     try:
                         candle_dt         = datetime.strptime(ind.last_candle_time, "%Y-%m-%d %H:%M:%S")
                         data_freshness_ms = int((emit_time - candle_dt).total_seconds() * 1000)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Calculo freshness fallo: %s", e)
 
                 doc = {
                     "id":                  f"{int(emit_time.timestamp()*1000)}_{symbol}",
@@ -745,6 +946,8 @@ async def _auto_scan_loop(app):
                     if not only_fire or is_fire:
                         asyncio.create_task(send_signal_telegram(doc, app))
 
+                    # Sin filtro extra aquí: toda señal emitida ya pasó el gate de
+                    # consenso ≥N arriba. Auto-exec ejecuta el 100% de lo emitido.
                     auto_execute = os.getenv("AUTO_EXECUTE", "false").lower() == "true"
                     if auto_execute:
                         asyncio.create_task(_auto_execute_trade(doc, app, score))
@@ -766,5 +969,5 @@ def _parse_ts(ts: str) -> datetime:
     """Parse de timestamp ISO UTC para comparaciones en el store in-memory."""
     try:
         return datetime.strptime(ts.replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
-    except Exception:
+    except (ValueError, TypeError):
         return datetime.utcnow()

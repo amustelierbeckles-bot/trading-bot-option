@@ -5,8 +5,55 @@ El bot auto-calibra cada 10 ciclos de escaneo (~20 min).
 Solo usa trades con audit_confidence='high' para evitar datos corruptos.
 """
 
+import asyncio
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
 _dynamic_min_quality: float = 0.55   # valor por defecto (sin calibración)
 _MIN_TRADES_TO_CALIBRATE: int = 20   # mínimo de trades HIGH-CONFIDENCE para calibrar
+
+# Cliente Redis async opcional (lo asigna server lifespan tras conectar).
+_cal_redis: Optional[Any] = None
+
+
+def cal_bind_redis(redis) -> None:
+    """Enlaza el cliente Redis async para persistir el umbral (None = solo RAM)."""
+    global _cal_redis
+    _cal_redis = redis
+
+
+def _fire_async(factory) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(factory())
+
+
+async def cal_save_state(redis) -> None:
+    """Persiste el umbral dinámico en Redis."""
+    if not redis:
+        return
+    try:
+        await redis.set("cal:dynamic_min_quality", str(_dynamic_min_quality))
+    except Exception as e:
+        logger.debug("Persistencia calibracion Redis fallo: %s", e)
+
+
+async def cal_load_state(redis) -> None:
+    """Restaura el umbral dinámico desde Redis al arrancar."""
+    global _dynamic_min_quality
+    if not redis:
+        return
+    try:
+        saved = await redis.get("cal:dynamic_min_quality")
+        if saved is not None:
+            _dynamic_min_quality = max(0.45, min(0.85, float(saved)))
+            logger.info("✅ Umbral de calibración restaurado: %.4f", _dynamic_min_quality)
+    except Exception as e:
+        logger.debug("Carga calibracion Redis fallo: %s", e)
 
 
 def compute_optimal_threshold(trades: list) -> dict:
@@ -92,6 +139,9 @@ def get_dynamic_threshold() -> float:
 
 
 def set_dynamic_threshold(value: float) -> None:
-    """Actualiza el umbral dinámico (llamado por auto-calibración)."""
+    """Actualiza el umbral dinámico (llamado por auto-calibración) y lo persiste en Redis."""
     global _dynamic_min_quality
     _dynamic_min_quality = max(0.45, min(0.85, value))
+    if _cal_redis:
+        r = _cal_redis
+        _fire_async(lambda: cal_save_state(r))

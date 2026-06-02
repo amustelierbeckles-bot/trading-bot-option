@@ -302,7 +302,7 @@ chore: remove deploy.zip.zip from git history (102MB → 243KB)
 - Usar `.env.example` como plantilla para nuevos entornos
 - La `ci_session` de PocketOption está vinculada a la IP del VPS — no funciona desde local
 - MongoDB no tiene usuario/password en red interna Docker — no exponer puerto 27017 al exterior
-- El circuit breaker es sagrado — nunca desactivarlo en producción
+- Circuit breaker desactivado (`CB_CONSECUTIVE_LIMIT=9999`) durante fase demo de colección de datos — intencional (2026-05-19). Restaurar a 3 antes de dinero real.
 
 ---
 

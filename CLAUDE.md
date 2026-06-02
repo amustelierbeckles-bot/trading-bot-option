@@ -109,7 +109,7 @@ React Dashboard (localhost:3000)
 - **`PO_CI_SESSION` / `PO_SSID`**: Tied to VPS IP — doesn't work from local. Renew via `scripts/get_po_session_playwright.py` when WebSocket fails
 - **MongoDB `signals` collection**: Never drop — it's the irreplaceable statistical history
 - **Healthcheck in Dockerfile**: Use `python urllib.request` — never install `curl`
-- **Circuit breaker**: Never disable in production
+- **Circuit breaker**: `CB_CONSECUTIVE_LIMIT=9999` (disabled) during demo data-collection phase — intentional (2026-05-19). Restore to 3 before real-money/production.
 
 ---
 
@@ -176,7 +176,7 @@ Deploy is **manual via SSH** — there is no automatic CD pipeline.
 ## Protocolo del Agente (PO)
 
 ### MÓDULOS CRÍTICOS — requieren confirmación explícita antes de modificar
-auto_exec.py · circuit_breaker.py · antifragile.py · risk_manager.py
+auto_exec.py · circuit_breaker.py · antifragile.py · routes/risk.py
 
 Formato de confirmación requerido:
 > Confirmo: modificar [módulo] con modelo [modelo]

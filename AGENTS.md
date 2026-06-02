@@ -15,8 +15,8 @@
 - Logs must include emoji + context (e.g. logger.info('✅ MongoDB conectado'))
 - Strategy classes must have Strategy suffix and implement .evaluate()
 
-## Critical modules (auto_exec.py, circuit_breaker.py, risk_manager.py)
-- Never disable the circuit breaker
+## Critical modules (auto_exec.py, circuit_breaker.py, routes/risk.py)
+- Circuit breaker disabled (CB_CONSECUTIVE_LIMIT=9999) only during demo data-collection (2026-05-19); restore to 3 for real money
 - Never skip WR filter checks
 - MAX_TD_FALLBACK_PER_CYCLE must remain <= 5
 

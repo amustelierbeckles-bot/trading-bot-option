@@ -10,6 +10,7 @@ Módulos:
 """
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -85,7 +86,7 @@ async def auto_register_observation(signal: dict, app,
     Maximiza el historial estadístico sin requerir interacción del usuario.
     Retorna el audit_id generado.
     """
-    from services.telegram_service import local_time, parse_naive_utc
+    from services.telegram_service import local_time, parse_naive_utc, get_local_offset
 
     now        = datetime.utcnow()
     latency_ms = None
@@ -112,7 +113,7 @@ async def auto_register_observation(signal: dict, app,
         "cci":                         signal.get("cci", 0),
         "signal_timestamp":            signal.get("timestamp", now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"),
         "created_at":                  now,
-        "created_at_local":            local_time(now).strftime("%Y-%m-%dT%H:%M:%S") + " UTC-5",
+        "created_at_local":            local_time(now).strftime("%Y-%m-%dT%H:%M:%S") + f" UTC{int(get_local_offset().total_seconds()//3600)}",
         "session":                     signal.get("session", ""),
         "source":                      "auto_audit",
         "strategies":                  signal.get("strategies_agreeing", []),
@@ -126,8 +127,21 @@ async def auto_register_observation(signal: dict, app,
 
     try:
         if app.state.use_mongo:
-            result   = await app.state.db.trades.insert_one(doc)
-            audit_id = str(result.inserted_id)
+            from pymongo import ReturnDocument
+            # Upsert por signal_id: evita E11000 si auto_exec ya insertó el trade.
+            # $set fusiona campos de auditoría con los de ejecución (no se pisan).
+            sid = doc.get("signal_id", "")
+            if sid:
+                res = await app.state.db.trades.find_one_and_update(
+                    {"signal_id": sid},
+                    {"$set": doc},
+                    upsert=True,
+                    return_document=ReturnDocument.AFTER,
+                )
+                audit_id = str(res["_id"])
+            else:
+                result   = await app.state.db.trades.insert_one(doc)
+                audit_id = str(result.inserted_id)
         else:
             doc["id"] = f"audit_{int(now.timestamp()*1000)}"
             app.state.trades_store.append(doc)
@@ -174,20 +188,26 @@ async def verify_signal_result(signal: dict, entry_time: datetime,
                 if po_price and po_price > 0:
                     close_price = po_price
                     logger.info("📡 Precio auditoría desde PO WS | %s = %.5f", symbol, close_price)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Precio auditoria PO WS fallo: %s", e)
 
         if close_price is None:
             provider = get_provider()
             if provider and provider.is_configured:
-                # Prioridad 1: cache TwelveData del ciclo anterior (TTL 300s, ~125s de edad)
+                # Prioridad 1: cache fresco TwelveData (TTL 300s)
                 cached = provider.get_cached_price(symbol)
                 if cached and cached > 0:
                     close_price = cached
                     logger.info("📡 Precio auditoría desde cache TD | %s = %.5f", symbol, cached)
                 else:
-                    # Prioridad 2: fetch fresco invalidando cache
+                    # Prioridad 2: fetch fresco o cache stale (hasta 10 min)
                     close_price = await provider.get_price_for_audit(symbol)
+                    if close_price is not None:
+                        cached_entry = provider._cache.get(symbol)
+                        if cached_entry:
+                            age = time.time() - (cached_entry["expires"] - provider.cache_ttl)
+                            if age > provider.cache_ttl:
+                                confidence = "medium"
 
         if close_price is None:
             confidence = "low"
@@ -248,8 +268,8 @@ async def verify_signal_result(signal: dict, entry_time: datetime,
                         "verified_at": now,
                     }}
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Paso opcional auditoria fallo: %s", e)
 
         logger.info(
             "✅ Auditoría | %s %s | entrada=%.5f cierre=%.5f | %s | %+.1f pips [%s]",
@@ -262,8 +282,8 @@ async def verify_signal_result(signal: dict, entry_time: datetime,
             await wr_cache_invalidate(redis, f"wr:{symbol}")
             await wr_cache_invalidate(redis, "wr:global")
             await wr_cache_invalidate(redis, "wr:stats")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Invalidacion cache WR fallo: %s", e)
 
         cb_record_result(outcome, symbol)
         return outcome
@@ -299,8 +319,8 @@ async def verify_every_signal(signal_id: str, signal: dict, app) -> None:
                 po_price = po.get_latest_price(symbol, max_age_seconds=180)
                 if po_price and po_price > 0:
                     close_price = po_price
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Precio auditoria PO WS fallo: %s", e)
 
         if close_price is None:
             provider = get_provider()

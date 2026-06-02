@@ -59,6 +59,7 @@ services:
       - .env.production  # Archivo con API_SECRET_KEY, tokens, etc.
     volumes:
       - ./logs/api:/var/log/trading-bot
+      - ./backend:/app:ro
     depends_on:
       - mongo
       - redis
@@ -122,6 +123,58 @@ services:
   #     - mongo
   #   networks:
   #     - trading-network
+
+  # ===========================================================================
+  # PO ROTATOR - DESACTIVADO 2026-04-28
+  # Razón: con proxy Webshare Static Residential (IP fija 31.98.14.221),
+  # el SSID no necesita rotarse — auth WS se mantiene válido. Además el
+  # login automático choca con reCAPTCHA v2. Si vuelves a IP rotativa o
+  # PO empieza a invalidar SSID por tiempo, descomenta el bloque y
+  # añade un solver de captcha (2Captcha/CapSolver) en rotator.py.
+  # Código original intacto en /opt/trading-bot/po-rotator/.
+  # ===========================================================================
+  # po-rotator:
+  #   build:
+  #     context: ./po-rotator
+  #     dockerfile: Dockerfile
+  #   image: po-rotator:latest
+  #   container_name: po-rotator
+  #   restart: unless-stopped
+  #   environment:
+  #     - LOG_LEVEL=INFO
+  #     - API_CONTAINER_NAME=trading-bot-api
+  #     - API_HEALTH_URL=http://api:8000/api/health
+  #     - ENV_PATH=/host/.env.production
+  #   env_file:
+  #     - .env.production
+  #   volumes:
+  #     - ./.env.production:/host/.env.production:rw
+  #     - /var/run/docker.sock:/var/run/docker.sock:rw
+  #   networks:
+  #     - trading-network
+  #   depends_on:
+  #     - api
+
+
+  copytrade-tyl-api:
+    build:
+      context: ./copytrade-tyl
+      dockerfile: Dockerfile
+    image: copytrade-tyl:latest
+    container_name: copytrade-tyl-api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - BOT_API_URL=http://trading-bot-api:8000
+      - COPYTRADE_DATA_DIR=/app/data
+    volumes:
+      - ./data/copytrade-tyl:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      - api
+
 
 networks:
   trading-network:

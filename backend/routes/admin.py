@@ -27,7 +27,7 @@ router = APIRouter()
 async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
     current_key = os.getenv("API_SECRET_KEY", None)
     if not current_key:
-        return True
+        raise HTTPException(status_code=503, detail="API key not configured")
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header required",
                             headers={"WWW-Authenticate": "ApiKey"})
@@ -67,6 +67,14 @@ async def health_check(request: Request):
             "last_tick_age_seconds": None,
             "kill_switch":         False,
         }
+    pip_coverage: dict = {}
+    if getattr(request.app.state, "use_mongo", False):
+        from pip_tracker import get_pip_tracker_coverage
+        try:
+            pip_coverage = await get_pip_tracker_coverage(request.app.state.db)
+        except Exception:
+            pip_coverage = {"error": "unavailable"}
+
     return {
         "status":              "healthy",
         "timestamp":           now.isoformat(),
@@ -77,7 +85,18 @@ async def health_check(request: Request):
         "circuit_breaker":     cb,
         "session_pairs":       len(session["pairs"]),
         "po_websocket":        po_status,
+        "pip_tracker":         pip_coverage,
     }
+
+
+@router.post("/api/internal/pip_tracker/sweep")
+async def pip_tracker_sweep(request: Request, _: bool = Depends(_verify_api_key)):
+    """Overnight sweep: intenta recuperar slots nulos por fallo de infra vía buffer del collector."""
+    if not getattr(request.app.state, "use_mongo", False):
+        raise HTTPException(status_code=503, detail="MongoDB no disponible")
+    from pip_tracker import sweep_missed_slots
+    result = await sweep_missed_slots(request.app.state.db)
+    return result
 
 
 @router.post("/api/admin/test-email")
@@ -161,10 +180,10 @@ async def _run_notification_test(app=None) -> dict:
 
 
 @router.post("/api/notifications/test")
-async def test_notifications(request: Request):
+async def test_notifications(request: Request, _: bool = Depends(_verify_api_key)):
     return await _run_notification_test(app=request.app)
 
 
 @router.post("/api/whatsapp/test")
-async def test_whatsapp(request: Request):
+async def test_whatsapp(request: Request, _: bool = Depends(_verify_api_key)):
     return await _run_notification_test(app=request.app)

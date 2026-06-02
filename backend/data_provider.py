@@ -488,16 +488,16 @@ class TwelveDataProvider:
             closed_candle = candles[-2]
             self._req_today += 1
 
-            import logging as _logging
-            _logging.getLogger(__name__).info(
+
+            logger.info(
                 "🎯 Precio auditoría %s | candle_time=%s | close=%.5f",
                 otc_symbol, closed_candle.time, closed_candle.close
             )
             return closed_candle.close
 
         except Exception as exc:
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
+
+            logger.warning(
                 "⚠️  Error get_price_for_audit %s: %s", otc_symbol, exc
             )
             return None
@@ -662,14 +662,103 @@ def get_provider() -> Optional[TwelveDataProvider]:
     return _provider
 
 
+# Nombre par OTC -> código subscribe del collector (refleja mapeo de collector.py)
+_COLLECTOR_CODE = {
+    "OTC_GBPCHF": "GBPCHF_otc",
+    "OTC_NZDCHF": "NZDCHF_otc",
+}
+_COLLECTOR_HOST = os.getenv("COLLECTOR_HOST", "172.18.0.1")
+_COLLECTOR_BASE = f"http://{_COLLECTOR_HOST}:8001"
+
+
+async def _try_collector_cci(otc_symbol: str) -> Optional[float]:
+    """Try to get CCI from po-tick-collector on :8001. Returns None on any failure."""
+    collector_pair = _COLLECTOR_CODE.get(otc_symbol)
+    if collector_pair is None:
+        base = otc_symbol.replace("OTC_", "")
+        collector_pair = base + "_otc"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(f"{_COLLECTOR_BASE}/cci/{collector_pair}")
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("is_ready"):
+                return float(data["cci"])
+    except Exception as e:
+        logger.debug("Fetch CCI collector fallo: %s", e)
+    return None
+
+
+async def _try_collector_bars(otc_symbol: str) -> Optional[IndicatorSet]:
+    """Build a full IndicatorSet from collector /bars endpoint (real OTC data).
+    Returns None on any failure or insufficient bars."""
+    collector_pair = _COLLECTOR_CODE.get(otc_symbol)
+    if collector_pair is None:
+        base = otc_symbol.replace("OTC_", "")
+        collector_pair = base + "_otc"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as c:
+            r = await c.get(f"{_COLLECTOR_BASE}/bars/{collector_pair}?n=50")
+        if r.status_code != 200:
+            return None
+        bars = r.json()
+        if len(bars) < 26:  # mínimo para MACD(12,26)
+            return None
+        # Chequeo de staleness: feed congelado produce MAD≈0 → CCI explota
+        closes = [b["close"] for b in bars]
+        unique_closes = len(set(round(c, 6) for c in closes))
+        if unique_closes < len(closes) * 0.5:
+            logger.warning(
+                "[FROZEN FEED] %s: %d/%d barras identicas → descartando",
+                otc_symbol, len(closes) - unique_closes, len(closes)
+            )
+            return None
+        candles = [
+            CandleData(
+                time=b["ts"],
+                open=b["open"],
+                high=b["high"],
+                low=b["low"],
+                close=b["close"],
+                volume=float(b.get("count", 0)),
+            )
+            for b in bars
+        ]
+        ind = IndicatorSet()
+        ind.compute(candles)
+        ind.fetch_wall_time = time.time()
+        logger.info("📡 [FUENTE: collector-bars] %s CCI=%.1f EMA9=%.5f trend=%s",
+                    otc_symbol, ind.cci, ind.ema9, ind.trend)
+        return ind
+    except Exception:
+        return None
+
+
 async def get_indicators_for(otc_symbol: str) -> IndicatorSet:
     """
     Función principal: retorna indicadores reales si API está configurada,
     o simulados si no lo está. NUNCA lanza excepción.
+    Prioridad: 1) collector bars (OTC real)  2) Twelve Data  3) simulados
     """
+    # Prioridad 1: barras del collector — precios OTC reales, indicadores calculados
+    ind = await _try_collector_bars(otc_symbol)
+    if ind:
+        return ind
+
+    # Prioridad 2: Twelve Data (proxy forex, fallback si está configurado)
+    collector_cci = await _try_collector_cci(otc_symbol)
     if _provider and _provider.is_configured:
         real = await _provider.get_indicators(otc_symbol)
         if real:
+            if collector_cci is not None:
+                real.cci = collector_cci
+                logger.info("📡 [FUENTE: TD+collector-cci] %s CCI=%.1f", otc_symbol, collector_cci)
             return real
-    return get_simulated_indicators(otc_symbol)
+
+    # Prioridad 3: simulado
+    ind = get_simulated_indicators(otc_symbol)
+    if collector_cci is not None:
+        ind.cci = collector_cci
+        logger.info("📡 [FUENTE: collector-cci sobre simulado] %s CCI=%.1f", otc_symbol, collector_cci)
+    return ind
 

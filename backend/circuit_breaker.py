@@ -30,7 +30,7 @@ _cb_state: Dict[str, object] = {
 # Cliente Redis async opcional (lo asigna server lifespan tras conectar).
 _cb_redis: Optional[Any] = None
 
-CB_CONSECUTIVE_LIMIT = 3
+CB_CONSECUTIVE_LIMIT = 9999
 CB_COOLDOWN_MINUTES  = 60
 
 
@@ -69,8 +69,8 @@ async def cb_save_state(redis) -> None:
             "reason":             str(_cb_state.get("reason") or ""),
         }
         await redis.set("cb:state", json.dumps(payload), ex=7200)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Persistencia estado CB en Redis fallo: %s", e)
 
 
 async def cb_load_state(redis) -> None:
@@ -93,8 +93,8 @@ async def cb_load_state(redis) -> None:
             "📥 Circuit Breaker | estado cargado desde Redis | blocked=%s",
             _cb_state["blocked"],
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Carga estado CB desde Redis fallo: %s", e)
 
 
 def cb_is_blocked() -> bool:

@@ -58,14 +58,14 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# LIFESPAN
+# CICLO DE VIDA
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting Trading Bot API v3.0 (modular)...")
 
-    # ── Data provider (Twelve Data) ───────────────────────────────────────────
+    # ── Proveedor de datos (Twelve Data) ───────────────────────────────────────────
     provider = init_provider()
     await provider.start()
     app.state.data_provider = provider
@@ -104,6 +104,9 @@ async def lifespan(app: FastAPI):
             from antifragile import af_bind_redis, af_load_state
             af_bind_redis(r)
             await af_load_state(r)
+            from calibration import cal_bind_redis, cal_load_state
+            cal_bind_redis(r)
+            await cal_load_state(r)
         except Exception as re:
             logger.warning("⚠️  Redis no disponible (%s) — caché in-memory activo", re)
 
@@ -126,12 +129,14 @@ async def lifespan(app: FastAPI):
                     "⚠️  PO_USER_ID inválido (%r) — usando 0 (auth WebSocket omitido)",
                     _po_uid_raw,
                 )
-            po_secret = (os.getenv("PO_SECRET") or "").strip()
+            po_secret      = (os.getenv("PO_SECRET") or "").strip()
+            po_full_cookie = (os.getenv("PO_FULL_COOKIE") or "").strip()
             po = init_po_provider(
                 ssid=po_ssid,
                 is_demo=is_demo,
                 user_id=po_user_id,
                 secret=po_secret,
+                full_cookie=po_full_cookie,
             )
             await po.start()
             app.state.po_provider = po
@@ -197,7 +202,7 @@ async def lifespan(app: FastAPI):
     app.state.ensemble = MultiStrategyEnsemble(list(app.state.strategies.values()))
     logger.info("✅ %d estrategias cargadas", len(app.state.strategies))
 
-    # ── Email Service + APScheduler ───────────────────────────────────────────
+    # ── Servicio de email + APScheduler ───────────────────────────────────────────
     app.state.email_service = None
     app.state.scheduler     = None
     if app.state.use_mongo:
@@ -220,13 +225,13 @@ async def lifespan(app: FastAPI):
         except Exception as email_err:
             logger.warning("⚠️  Email service no disponible: %s", email_err)
 
-    # ── Background tasks ──────────────────────────────────────────────────────
+    # ── Tareas en segundo plano ──────────────────────────────────────────────────────
     scan_task    = asyncio.create_task(_auto_scan_loop(app))
     polling_task = asyncio.create_task(telegram_polling_loop(app))
 
     yield
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
+    # ── Apagado ──────────────────────────────────────────────────────────────
     for task in (scan_task, polling_task):
         task.cancel()
         try:
@@ -247,7 +252,7 @@ async def lifespan(app: FastAPI):
 
 
 # ============================================================================
-# APP FACTORY
+# FÁBRICA DE APP
 # ============================================================================
 
 app = FastAPI(
@@ -274,7 +279,7 @@ app.add_middleware(
     max_age=600,
 )
 
-# ── Security Headers ──────────────────────────────────────────────────────────
+# ── Cabeceras de seguridad ──────────────────────────────────────────────────────────
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -291,7 +296,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# ── Rate Limiting ─────────────────────────────────────────────────────────────
+# ── Limitación de tasa ─────────────────────────────────────────────────────────────
 
 class _RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
@@ -340,7 +345,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 # ============================================================================
-# ROUTERS
+# ENRUTADORES
 # ============================================================================
 
 from routes.admin   import router as admin_router
@@ -348,12 +353,14 @@ from routes.signals import router as signals_router
 from routes.trades  import router as trades_router
 from routes.stats   import router as stats_router
 from routes.risk    import router as risk_router
+from routes.copytrade_internal import router as copytrade_internal_router
 
 app.include_router(admin_router)
 app.include_router(signals_router)
 app.include_router(trades_router)
 app.include_router(stats_router)
 app.include_router(risk_router)
+app.include_router(copytrade_internal_router)
 
 # ============================================================================
 

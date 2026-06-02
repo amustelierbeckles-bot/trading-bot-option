@@ -81,11 +81,12 @@ def quality_score(signal: dict, symbol: str = None,
     real_bonus = 0.05 if (ind and ind.is_real) else 0.0
 
     return round(
-        ortho_confluence * 0.30 +
-        confidence       * 0.30 +
-        cci_factor       * 0.15 +
-        trend_score      * 0.15 +
-        consensus        * 0.10 +
-        real_bonus,
+        min(1.0,
+            ortho_confluence * 0.30 +
+            confidence       * 0.30 +
+            cci_factor       * 0.15 +
+            trend_score      * 0.15 +
+            consensus        * 0.10 +
+            real_bonus),
         4
     )

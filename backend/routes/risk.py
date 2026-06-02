@@ -32,7 +32,7 @@ async def _verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-K
     import hmac
     current_key = os.getenv("API_SECRET_KEY", None)
     if not current_key:
-        return True
+        raise HTTPException(status_code=503, detail="API key not configured")
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header required")
     if not hmac.compare_digest(x_api_key, current_key):
