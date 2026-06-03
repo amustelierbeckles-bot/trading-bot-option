@@ -1,6 +1,7 @@
-# Frontend — Pendientes (auditoría 2026-06-02)
+# Frontend — Auditoría CERRADA (2026-06-02)
 
-Fuente: FRONTEND_AUDIT_2026-06-02.md. Estado al 2026-06-02.
+Fuente: FRONTEND_AUDIT_2026-06-02.md. **Auditoría culminada 2026-06-02.**
+Todos los hallazgos F-1…F-12 tratados: resueltos/desplegados, o diferidos por decisión del dueño (F-3/F-4/F-6/F-7 dashboard — sin uso actual, reactivable).
 
 ## Resueltos
 - F-1 drift bundle — bundle viejo reemplazado, build desde dfd5f47 servido por nginx (2026-06-02 14:28).
