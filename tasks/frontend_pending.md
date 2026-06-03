@@ -20,5 +20,7 @@ Fuente: FRONTEND_AUDIT_2026-06-02.md. Estado al 2026-06-02.
 
 ## Aparte — pendiente
 - Limpiar deps huérfanas de `package.json` (tras borrar los 12 archivos). Opcional; tree-shaking ya las excluye del bundle.
-- Rotar token Telegram (salió en claro en logs del api). Requiere @BotFather + update `.env.production`.
-- Borrar línea muerta `REACT_APP_API_KEY` de `.env.production` (cosmético, ya no se referencia).
+
+## Resueltos — sesión 2026-06-02 (cont.)
+- Dead-code + F-8 + F-12 — DESPLEGADO 2026-06-02. Push 940edee → VPS git pull → frontend rebuild node:20 (`main.6a5a306a.js`, 130.09 kB) → nginx reload. Verificado en bundle live: `el.innerHTML` = 0 matches (patrón XSS removido), `po-reminder` presente (DOM-building vivo). El `grep -c innerHTML=1` fue falso positivo (bundle minificado = 1 línea física; token residual de React DOM internals).
+- Token Telegram rotado — RESUELTO 2026-06-02 (validado por dueño). @BotFather revoke → nuevo token en `.env.production` VPS. **Lección:** `docker restart` NO recarga `.env` (env se inyecta solo al CREAR container) → ver `lessons.md` L1. Verificado: token viejo `getMe ok=False Unauthorized` (muerto), token nuevo `getUpdates 200 OK` (polling activo).
