@@ -19,8 +19,9 @@ Fuente: FRONTEND_AUDIT_2026-06-02.md. Estado al 2026-06-02.
 - **F-7 (dashboard)** — los fetches de `useDashboard.js` (i1-i5) no tienen timeout ni AbortController; sin abort en unmount. Fix: AbortController + signal, abort en cleanup.
 
 ## Aparte — pendiente
-- Limpiar deps huérfanas de `package.json` (tras borrar los 12 archivos). Opcional; tree-shaking ya las excluye del bundle.
+- (vacío)
 
 ## Resueltos — sesión 2026-06-02 (cont.)
 - Dead-code + F-8 + F-12 — DESPLEGADO 2026-06-02. Push 940edee → VPS git pull → frontend rebuild node:20 (`main.6a5a306a.js`, 130.09 kB) → nginx reload. Verificado en bundle live: `el.innerHTML` = 0 matches (patrón XSS removido), `po-reminder` presente (DOM-building vivo). El `grep -c innerHTML=1` fue falso positivo (bundle minificado = 1 línea física; token residual de React DOM internals).
+- Deps huérfanas package.json — DESPLEGADO 2026-06-02 (commit 026209f). Borradas 4: recharts, lightweight-charts, @hookform/resolvers, zod (cero imports en src/, leftovers de chart/form components borrados). Conservadas: radix (usadas por ui/), ajv (fix build CRA), date-fns (peer react-day-picker). Verificado: rebuild VPS `Compiled successfully`, bundle hash idéntico (main.6a5a306a.js — tree-shaking ya las excluía).
 - Token Telegram rotado — RESUELTO 2026-06-02 (validado por dueño). @BotFather revoke → nuevo token en `.env.production` VPS. **Lección:** `docker restart` NO recarga `.env` (env se inyecta solo al CREAR container) → ver `lessons.md` L1. Verificado: token viejo `getMe ok=False Unauthorized` (muerto), token nuevo `getUpdates 200 OK` (polling activo).
